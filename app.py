@@ -1,17 +1,20 @@
 """
-DART 재무정보 추출 에이전트 v5
+DART 재무정보 추출 에이전트 v6
 - PE 5개년 재무요약 템플릿
 - 상장사: finstate_all (XBRL) 우선
-- 외감 비상장사: 감사보고서 sub_docs HTML viewer 직접 파싱 (확정 동작)
-- 추후 PDF 검증 단계 추가 예정
+- 외감 비상장사: 감사보고서 sub_docs HTML viewer 직접 파싱
+- 회사 검색: corp_code.xml 직접 조회 fallback (사명 변경 대응)
 """
 
 import io
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
 import pandas as pd
+import requests
 import streamlit as st
 import OpenDartReader
 
@@ -25,7 +28,7 @@ st.set_page_config(
 )
 
 st.title("📊 DART 재무정보 추출 에이전트")
-st.caption("v5 — 외감 비상장사 감사보고서 HTML 직접 파싱 (sub_docs viewer)")
+st.caption("v6 — 외감사 HTML 파싱 + 사명 변경 대응 검색 fallback")
 
 # ====================================================================
 # 1) 상수
@@ -390,17 +393,78 @@ def find_account_in_html(df: pd.DataFrame, keywords: list, year_offset: int = 0)
     return None
 
 
+def classify_statement_table(t):
+    """표 내용 지문으로 BS/IS/CF/EQ 중 어떤 재무제표인지 판별."""
+    if t is None or t.shape[0] < 3 or t.shape[1] < 3:
+        return None
+    first_col = t.iloc[:, 0].astype(str).fillna("")
+    text = " ".join(first_col.tolist())
+    text_norm = text.replace(" ", "").replace("　", "").lower()
+
+    has_revenue = bool(re.search(r"매출액|영업수익", text_norm))
+    has_op_inc = "영업이익" in text_norm or "영업손실" in text_norm
+    if has_revenue and has_op_inc:
+        return "IS"
+
+    has_assets = ("자산총계" in text_norm) or bool(re.search(r"자\s*산\s*총\s*계", text))
+    has_liab = ("부채총계" in text_norm) or bool(re.search(r"부\s*채\s*총\s*계", text))
+    has_equity = ("자본총계" in text_norm) or bool(re.search(r"자\s*본\s*총\s*계", text))
+    if has_assets and has_liab and has_equity:
+        return "BS"
+
+    has_op_cf = "영업활동" in text_norm and "현금흐름" in text_norm
+    has_inv_cf = "투자활동" in text_norm
+    has_fin_cf = "재무활동" in text_norm
+    if has_op_cf and (has_inv_cf or has_fin_cf):
+        return "CF"
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def parse_combined_statements(url: str) -> Dict[str, Optional[pd.DataFrame]]:
+    """
+    (첨부)재무제표 같은 통합 페이지에서 모든 표를 읽고 BS/IS/CF로 자동 분류.
+    반환: {'BS': df, 'IS': df, 'CF': df}
+    """
+    result = {"BS": None, "IS": None, "CF": None}
+    try:
+        tables = pd.read_html(url)
+    except Exception:
+        return result
+    for t in tables:
+        cls = classify_statement_table(t)
+        if cls and result[cls] is None:
+            result[cls] = t
+    return result
+
+
+def detect_unit_from_tables(tables: list) -> int:
+    """파싱된 표 리스트의 상단 헤더에서 단위 감지."""
+    text_blob = ""
+    for t in tables[:5]:
+        try:
+            text_blob += " ".join(t.fillna("").astype(str).values.flatten().tolist())
+        except Exception:
+            continue
+    if re.search(r"단위\s*[:：]?\s*백만\s*원", text_blob):
+        return 1_000_000
+    if re.search(r"단위\s*[:：]?\s*천\s*원", text_blob):
+        return 1_000
+    return 1
+
+
 def extract_external_audit_data(_dart, corp_code: str, year: int,
                                 prefer_consolidated: bool = True) -> Dict:
     """
-    외감 비상장사: 감사보고서 sub_docs HTML viewer에서 BS/IS/CF 직접 파싱.
-    반환: {'data': {...}, 'unit_scale': int, 'rcept_no': str, ...}
+    외감 비상장사: 감사보고서 sub_docs에서 BS/IS/CF 직접 파싱.
+    두 가지 sub_docs 구조 모두 대응:
+      - 패턴 A: 재무상태표/손익계산서/현금흐름표가 각각 별도 항목
+      - 패턴 B: '(첨부)재 무 제 표' 한 덩어리에 통합
     """
     reports = find_external_audit_reports(_dart, corp_code, year)
     if not reports:
         return {"data": None, "error": f"{year}년 외부감사 감사보고서 미발견"}
 
-    # 연결/별도 우선순위에 따라 선택
     if prefer_consolidated:
         chosen = next((r for r in reports if r["is_consolidated"]), reports[0])
     else:
@@ -412,23 +476,34 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         return {"data": None, "error": f"sub_docs 조회 실패 (rcept_no={rcept_no})",
                 "rcept_no": rcept_no, "report_nm": chosen["report_nm"]}
 
-    # 각 statement URL
+    # 1차: 패턴 A - 항목 분리형
     urls = {
         "BS": find_statement_url(sub_docs, "재무상태표"),
         "IS": find_statement_url(sub_docs, "손익계산서"),
         "CF": find_statement_url(sub_docs, "현금흐름표"),
     }
-    # 포괄손익계산서 fallback
     if not urls["IS"]:
         urls["IS"] = find_statement_url(sub_docs, "포괄손익계산서")
 
-    # 단위 감지 (BS 헤더 사용)
-    unit_scale = 1
-    if urls["BS"]:
-        unit_scale = detect_unit_from_header(urls["BS"])
-
-    # 각 표 파싱
     dfs = {k: parse_html_statement(u) if u else None for k, u in urls.items()}
+    unit_scale = detect_unit_from_header(urls["BS"]) if urls["BS"] else 1
+
+    # 2차: 패턴 B - 통합 페이지 fallback
+    used_combined = False
+    if all(df is None for df in dfs.values()):
+        combined_url = find_statement_url(sub_docs, "재무제표")
+        if combined_url:
+            used_combined = True
+            classified = parse_combined_statements(combined_url)
+            for k in ["BS", "IS", "CF"]:
+                if dfs[k] is None and classified.get(k) is not None:
+                    dfs[k] = classified[k]
+            # 단위 감지 (전체 페이지 표에서)
+            try:
+                all_tables = pd.read_html(combined_url)
+                unit_scale = detect_unit_from_tables(all_tables)
+            except Exception:
+                pass
 
     # 데이터 추출
     result_data = {}
@@ -453,6 +528,7 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         "is_consolidated": chosen["is_consolidated"],
         "debug": debug,
         "statement_urls": urls,
+        "parsing_mode": "통합페이지" if used_combined else "항목분리",
     }
 
 
@@ -678,35 +754,202 @@ end_year = st.sidebar.number_input(
 
 search_btn = st.sidebar.button("1️⃣ 회사 검색", use_container_width=True)
 
+refresh_cache_btn = st.sidebar.button(
+    "🔄 회사 목록 캐시 새로고침",
+    help="사명이 변경된 회사가 검색되지 않을 때 사용. corp_code.xml을 다시 다운로드합니다.",
+    use_container_width=True,
+)
+
 # ====================================================================
-# 9) 회사 검색
+# 9) 회사 검색 (사명 변경 대응 다층 fallback)
 # ====================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def search_companies(_dart, query: str) -> pd.DataFrame:
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_corp_code_xml(api_key: str) -> pd.DataFrame:
+    """DART 전체 기업 코드 목록을 직접 다운로드.
+    OpenDartReader 내부 캐시와 별개로 매일 갱신.
+    반환: corp_code / corp_name / corp_eng_name / stock_code / modify_date 컬럼
+    """
     try:
-        q = query.strip()
-        if q.isdigit() and len(q) in (6, 8):
+        url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={api_key}"
+        r = requests.get(url, timeout=60)
+        if r.status_code != 200:
+            return pd.DataFrame()
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        xml_content = z.read("CORPCODE.xml").decode("utf-8")
+        root = ET.fromstring(xml_content)
+        rows = []
+        for elem in root.iter("list"):
+            rows.append({
+                "corp_code": elem.findtext("corp_code", "").strip(),
+                "corp_name": elem.findtext("corp_name", "").strip(),
+                "corp_eng_name": elem.findtext("corp_eng_name", "").strip(),
+                "stock_code": elem.findtext("stock_code", "").strip(),
+                "modify_date": elem.findtext("modify_date", "").strip(),
+            })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        st.warning(f"corp_code.xml 다운로드 실패: {e}")
+        return pd.DataFrame()
+
+
+def search_in_corp_xml(corp_df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """corp_code.xml에서 부분 매칭으로 검색.
+    한글/영문 모두 검색. 공백 무시.
+    """
+    if corp_df is None or corp_df.empty:
+        return pd.DataFrame()
+    q = query.strip().replace(" ", "")
+    if not q:
+        return pd.DataFrame()
+
+    name_norm = corp_df["corp_name"].astype(str).str.replace(" ", "")
+    eng_norm = corp_df["corp_eng_name"].astype(str).str.replace(" ", "").str.lower()
+    q_lower = q.lower()
+
+    mask = name_norm.str.contains(re.escape(q), na=False) | \
+           eng_norm.str.contains(re.escape(q_lower), na=False)
+    hits = corp_df[mask].copy()
+    if hits.empty:
+        return pd.DataFrame()
+
+    # 정확 일치 우선 정렬
+    def rank(row):
+        nm = str(row["corp_name"]).replace(" ", "")
+        en = str(row["corp_eng_name"]).replace(" ", "").lower()
+        if nm == q:
+            return 0
+        if q in nm and len(nm) - len(q) <= 3:
+            return 1
+        if en == q_lower:
+            return 2
+        if q in nm:
+            return 3
+        return 4
+    hits["_rank"] = hits.apply(rank, axis=1)
+    hits = hits.sort_values("_rank")
+    return hits.drop(columns=["_rank"]).head(50)
+
+
+def enrich_company_info(_dart, corp_code: str) -> Optional[Dict]:
+    """corp_code로 company() 호출해 corp_cls 등 상세 정보 보강."""
+    try:
+        info = _dart.company(corp_code)
+        if isinstance(info, dict):
+            return info
+        if isinstance(info, list) and info:
+            return info[0]
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_companies(_dart, _api_key: str, query: str) -> pd.DataFrame:
+    """
+    다층 검색:
+    1) corp_code 직접 입력이면 company() 호출
+    2) company_by_name 시도
+    3) 결과 없으면 corp_code.xml 직접 검색 (영문명 포함)
+    4) 최종 결과의 corp_cls가 비면 company()로 보강
+    """
+    q = query.strip()
+    if not q:
+        return pd.DataFrame()
+
+    # 1) corp_code
+    if q.isdigit() and len(q) in (6, 8):
+        try:
             info = _dart.company(q)
             if info is None:
                 return pd.DataFrame()
-            return pd.DataFrame([info]) if isinstance(info, dict) else pd.DataFrame(info)
-        result = _dart.company_by_name(q)
-        if result is None:
+            if isinstance(info, dict):
+                return pd.DataFrame([info])
+            if isinstance(info, list):
+                return pd.DataFrame(info)
+            return pd.DataFrame(info)
+        except Exception as e:
+            st.warning(f"검색 오류 (corp_code): {e}")
             return pd.DataFrame()
-        return result if isinstance(result, pd.DataFrame) else pd.DataFrame(result)
-    except Exception as e:
-        st.warning(f"검색 오류: {e}")
+
+    # 2) company_by_name
+    primary_df = pd.DataFrame()
+    try:
+        result = _dart.company_by_name(q)
+        if result is not None:
+            primary_df = result if isinstance(result, pd.DataFrame) else pd.DataFrame(result)
+    except Exception:
+        primary_df = pd.DataFrame()
+
+    # 3) fallback - corp_code.xml 직접 검색 (항상 함께 수행해 누락 방지)
+    corp_xml_df = download_corp_code_xml(_api_key)
+    xml_hits = search_in_corp_xml(corp_xml_df, q)
+
+    # 두 결과 병합 (primary 우선)
+    if primary_df.empty and xml_hits.empty:
         return pd.DataFrame()
 
+    if primary_df.empty:
+        # XML hits만 있음 - company() 호출해 corp_cls 보강 (최대 10건)
+        enriched = []
+        for _, row in xml_hits.head(10).iterrows():
+            cc = row["corp_code"]
+            info = enrich_company_info(_dart, cc)
+            if info:
+                enriched.append(info)
+            else:
+                enriched.append({
+                    "corp_code": cc,
+                    "corp_name": row["corp_name"],
+                    "stock_code": row.get("stock_code", ""),
+                    "corp_cls": "",
+                })
+        return pd.DataFrame(enriched)
+
+    if xml_hits.empty:
+        return primary_df
+
+    # 둘 다 있으면 primary를 기본으로 사용 (이미 corp_cls 포함됨)
+    primary_codes = set(primary_df["corp_code"].astype(str))
+    extras = xml_hits[~xml_hits["corp_code"].astype(str).isin(primary_codes)]
+    if extras.empty:
+        return primary_df
+
+    # extras에 corp_cls 정보 보강
+    enriched_extras = []
+    for _, row in extras.head(10).iterrows():
+        info = enrich_company_info(_dart, row["corp_code"])
+        if info:
+            enriched_extras.append(info)
+        else:
+            enriched_extras.append({
+                "corp_code": row["corp_code"],
+                "corp_name": row["corp_name"],
+                "stock_code": row.get("stock_code", ""),
+                "corp_cls": "",
+            })
+    if enriched_extras:
+        combined = pd.concat([primary_df, pd.DataFrame(enriched_extras)], ignore_index=True)
+        return combined
+    return primary_df
+
+
+# 캐시 새로고침 (함수 정의 이후에서 처리)
+if refresh_cache_btn:
+    download_corp_code_xml.clear()
+    search_companies.clear()
+    st.sidebar.success("캐시를 비웠습니다. 다시 검색해주세요.")
 
 if search_btn:
     if not company_input.strip():
         st.warning("회사명 또는 코드를 입력하세요.")
         st.stop()
     with st.spinner(f"'{company_input}' 검색 중..."):
-        companies = search_companies(dart, company_input)
+        companies = search_companies(dart, api_key, company_input)
     if companies.empty:
-        st.error(f"'{company_input}'에 해당하는 회사를 찾을 수 없습니다.")
+        st.error(
+            f"'{company_input}'에 해당하는 회사를 찾을 수 없습니다.\n\n"
+            "💡 사명이 최근 변경된 경우 좌측 사이드바 하단의 '회사 목록 캐시 새로고침'을 시도해보세요."
+        )
         st.stop()
     st.session_state["companies"] = companies
 
