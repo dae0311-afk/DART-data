@@ -265,6 +265,51 @@ def format_eokwon(v: Optional[float]) -> str:
     return f"{int(v):,}" if v >= 0 else f"({int(abs(v)):,})"
 
 
+# ----- v15: 일반 단위 시스템 (백만원/억원/십억원) -----
+# UNIT_SPECS: 표시 단위별 나눐수(divisor in 원 단위) 정의.
+# all값은 원 점수(int)으로 계산 후 divisor로 나눠 표시.
+# 소수점 자리수: 십억원은 1자리, 나머지 정수.
+UNIT_SPECS = {
+    "백만원": {"divisor": 1_000_000,    "decimals": 0, "suffix": "백만원"},
+    "억원":   {"divisor": 100_000_000,  "decimals": 0, "suffix": "억원"},
+    "십억원": {"divisor": 1_000_000_000,"decimals": 1, "suffix": "십억원"},
+}
+
+
+def to_unit(v_won: Optional[float], unit_label: str = "억원") -> Optional[float]:
+    """원 단위 값을 대상 표시 단위로 환산.
+    내부 추출값 v·scale 곱에 이미 단위가 적용된 원 값을 입력으로 기대.
+    """
+    if v_won is None:
+        return None
+    spec = UNIT_SPECS.get(unit_label, UNIT_SPECS["억원"])
+    out = v_won / spec["divisor"]
+    if spec["decimals"] == 0:
+        return round(out)
+    return round(out, spec["decimals"])
+
+
+def format_unit(v: Optional[float], unit_label: str = "억원") -> str:
+    """단위 환산된 값을 표시 문자열로 포맷. 음수는 괄호로."""
+    if v is None:
+        return "N/A"
+    spec = UNIT_SPECS.get(unit_label, UNIT_SPECS["억원"])
+    dec = spec["decimals"]
+    if dec == 0:
+        body = f"{int(round(v)):,}"
+        return body if v >= 0 else f"({int(round(abs(v))):,})"
+    fmt = f"{{:,.{dec}f}}"
+    body = fmt.format(v)
+    return body if v >= 0 else "(" + fmt.format(abs(v)) + ")"
+
+
+def won_value(v_raw: Optional[int], unit_scale: int = 1) -> Optional[int]:
+    """raw값·scale→원 단위. None은 유지."""
+    if v_raw is None:
+        return None
+    return int(v_raw) * int(unit_scale)
+
+
 def format_pct(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
@@ -1331,124 +1376,148 @@ def _other_fa_cash_like_eokwon(yearly_meta: Dict, year: int) -> Optional[float]:
     return round(total_won / 1e8)
 
 
-def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
-    rows = []
+# --------------------------------------------------------------------
+# v15: 계정·연도별 원 단위 계산 헬퍼 (표·차트 공용 데이터 소스)
+# --------------------------------------------------------------------
+def _val_won(yearly_data: Dict, yearly_meta: Dict, year: int, key: str) -> Optional[int]:
+    v = yearly_data.get(year, {}).get(key)
+    sc = yearly_meta.get(year, {}).get("unit_scale", 1)
+    return won_value(v, sc)
 
-    def get_val_eokwon(year, key):
-        v = yearly_data.get(year, {}).get(key)
-        scale = yearly_meta.get(year, {}).get("unit_scale", 1)
-        return to_eokwon(v, scale)
 
-    def safe_sum_eokwon(year, keys):
-        scale = yearly_meta.get(year, {}).get("unit_scale", 1)
-        d = yearly_data.get(year, {})
-        vals = [d.get(k) for k in keys if d.get(k) is not None]
-        if not vals:
-            return None
-        return to_eokwon(sum(vals), scale)
+def _sum_won(yearly_data: Dict, yearly_meta: Dict, year: int, keys: List[str]) -> Optional[int]:
+    sc = yearly_meta.get(year, {}).get("unit_scale", 1)
+    d = yearly_data.get(year, {})
+    vals = [d.get(k) for k in keys if d.get(k) is not None]
+    if not vals:
+        return None
+    return won_value(sum(vals), sc)
 
-    # 매출액
-    revenues = {y: get_val_eokwon(y, "매출액") for y in years}
-    rows.append(["매출액"] + [format_eokwon(revenues[y]) for y in years])
 
-    # Growth
-    growth_row = ["  Growth"]
+def _other_fa_cash_like_won(yearly_meta: Dict, year: int) -> Optional[int]:
+    """주석 분해 cash_like 합을 원 단위로."""
+    bd = yearly_meta.get(year, {}).get("other_fa_breakdown")
+    if not bd or not isinstance(bd, dict):
+        return None
+    cl = bd.get("cash_like", {}) or {}
+    if not cl:
+        return 0
+    return int(sum(v for v in cl.values() if isinstance(v, (int, float))))
+
+
+def compute_yearly_metrics(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> Dict:
+    """연도별 원 단위 지표 종합. 차트·표 공용.
+    반환:
+      {
+        "revenue":   {year: 원값},
+        "growth_pct":{year: 성장률%},   # 첫 연도는 prev_year_revenue_won 활용
+        "op_income": {year: 원값},
+        "op_margin_pct":  {year: %},
+        "ebitda":    {year: 원값},
+        "ebitda_margin_pct": {year: %},
+        "net_income":{year: 원값},
+        "net_margin_pct":{year: %},
+        "total_assets":      {year: 원값},
+        "total_liabilities": {year: 원값},
+        "total_equity":      {year: 원값},
+        "cash_equiv":   {year: 원값},   # _CASH_KEYS 합 + 주석 분해 cash_like
+        "total_borrow": {year: 원값},   # _DEBT_KEYS 합
+      }
+    """
+    out = {k: {} for k in [
+        "revenue", "growth_pct", "op_income", "op_margin_pct",
+        "ebitda", "ebitda_margin_pct", "net_income", "net_margin_pct",
+        "total_assets", "total_liabilities", "total_equity",
+        "cash_equiv", "total_borrow",
+    ]}
     sorted_years = sorted(years)
+
+    for y in sorted_years:
+        rev = _val_won(yearly_data, yearly_meta, y, "매출액")
+        op = _val_won(yearly_data, yearly_meta, y, "영업이익")
+        ni = _val_won(yearly_data, yearly_meta, y, "당기순이익")
+        ta = _val_won(yearly_data, yearly_meta, y, "자산총계")
+        tl = _val_won(yearly_data, yearly_meta, y, "부채총계")
+        te = _val_won(yearly_data, yearly_meta, y, "자본총계")
+        da = _sum_won(yearly_data, yearly_meta, y,
+                      ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"])
+        cash_static = _sum_won(yearly_data, yearly_meta, y, _CASH_KEYS)
+        cash_bd = _other_fa_cash_like_won(yearly_meta, y)
+        if cash_static is None and cash_bd is None:
+            cash = None
+        else:
+            cash = (cash_static or 0) + (cash_bd or 0)
+        borrow = _sum_won(yearly_data, yearly_meta, y, _DEBT_KEYS)
+        # 부채총계 있으나 부채 구성 전부 None이면 0(실제 차입 0)
+        if borrow is None and tl is not None:
+            borrow = 0
+
+        ebitda = (op + da) if (op is not None and da is not None) else None
+
+        out["revenue"][y] = rev
+        out["op_income"][y] = op
+        out["net_income"][y] = ni
+        out["total_assets"][y] = ta
+        out["total_liabilities"][y] = tl
+        out["total_equity"][y] = te
+        out["cash_equiv"][y] = cash
+        out["total_borrow"][y] = borrow
+        out["ebitda"][y] = ebitda
+
+        # 이익률
+        out["op_margin_pct"][y] = (op / rev * 100) if (op is not None and rev not in (None, 0)) else None
+        out["net_margin_pct"][y] = (ni / rev * 100) if (ni is not None and rev not in (None, 0)) else None
+        out["ebitda_margin_pct"][y] = (ebitda / rev * 100) if (ebitda is not None and rev not in (None, 0)) else None
+
+    # 성장률: 첫 연도는 prev_year_revenue_won, 이후는 전년 대비
     for i, y in enumerate(sorted_years):
+        curr = out["revenue"][y]
         if i == 0:
-            # 첫 연도: yearly_meta에 저장된 직전년 매출 활용 (원 단위)
-            curr = revenues[y]
-            prev_won = yearly_meta.get(y, {}).get("prev_year_revenue_won")
-            if curr is None or prev_won is None or prev_won == 0:
-                growth_row.append("N/A")
-            else:
-                # curr는 억원, prev_won은 원 → 억원으로 환산
-                prev_eok = prev_won / 1e8
-                growth_row.append(format_pct((curr - prev_eok) / abs(prev_eok) * 100))
+            prev = yearly_meta.get(y, {}).get("prev_year_revenue_won")
         else:
-            curr = revenues[y]
-            prev = revenues[sorted_years[i - 1]]
-            if curr is None or prev is None or prev == 0:
-                growth_row.append("N/A")
-            else:
-                growth_row.append(format_pct((curr - prev) / abs(prev) * 100))
-    rows.append(growth_row)
-
-    # EBITDA
-    op_inc = {y: get_val_eokwon(y, "영업이익") for y in years}
-    ebitda = {}
-    for y in years:
-        op = op_inc[y]
-        da = safe_sum_eokwon(y, ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"])
-        if op is None or da is None:
-            ebitda[y] = None
+            prev = out["revenue"][sorted_years[i - 1]]
+        if curr is None or prev is None or prev == 0:
+            out["growth_pct"][y] = None
         else:
-            ebitda[y] = op + da
+            out["growth_pct"][y] = (curr - prev) / abs(prev) * 100
 
-    rows.append(["EBITDA"] + [format_eokwon(ebitda[y]) for y in years])
-    rows.append(["  Margin"] + [
-        format_pct(ebitda[y] / revenues[y] * 100)
-        if (ebitda[y] is not None and revenues[y] not in (None, 0)) else "N/A"
-        for y in years
-    ])
+    return out
 
-    # 영업이익
-    rows.append(["영업이익"] + [format_eokwon(op_inc[y]) for y in years])
-    rows.append(["  Margin"] + [
-        format_pct(op_inc[y] / revenues[y] * 100)
-        if (op_inc[y] is not None and revenues[y] not in (None, 0)) else "N/A"
-        for y in years
-    ])
 
-    # 당기순이익
-    net_inc = {y: get_val_eokwon(y, "당기순이익") for y in years}
-    rows.append(["당기순이익"] + [format_eokwon(net_inc[y]) for y in years])
-    rows.append(["  Margin"] + [
-        format_pct(net_inc[y] / revenues[y] * 100)
-        if (net_inc[y] is not None and revenues[y] not in (None, 0)) else "N/A"
-        for y in years
-    ])
+def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int],
+                         unit_label: str = "억원") -> pd.DataFrame:
+    """v15: unit_label에 따라 단위 일괄 적용."""
+    m = compute_yearly_metrics(yearly_data, yearly_meta, years)
+    sorted_years = sorted(years)
 
-    # 자산총계 / 현금성(valuation 정의) / 부채 / 총차입금(valuation 정의) / 자본
-    rows.append(["자산총계"] + [format_eokwon(get_val_eokwon(y, "자산총계")) for y in years])
+    def fu(v_won):
+        return format_unit(to_unit(v_won, unit_label), unit_label)
 
-    # 현금성자산 = 정적 _CASH_KEYS 합 + 주석 분해 cash-like 합 (v14 valuation 정의)
-    # _CASH_KEYS: 현금및현금성자산, 단기금융상품, 장기금융상품 등 명시적 계정
-    # 주석 분해: "기타유동금융자산" 안의 정기예금/단기금융상품/MMF 등
-    cash_row = ["  현금성자산"]
-    for y in years:
-        d = yearly_data.get(y, {})
-        cv_static = safe_sum_eokwon(y, _CASH_KEYS)
-        cv_breakdown = _other_fa_cash_like_eokwon(yearly_meta, y)
-        total = None
-        if cv_static is not None or cv_breakdown is not None:
-            total = (cv_static or 0.0) + (cv_breakdown or 0.0)
-        if total is None:
-            cash_row.append(format_eokwon(0.0) if d.get("자산총계") is not None else "N/A")
-        else:
-            cash_row.append(format_eokwon(total))
-    rows.append(cash_row)
+    rows = []
+    # 매출액 + Growth
+    rows.append(["매출액"] + [fu(m["revenue"][y]) for y in sorted_years])
+    rows.append(["  Growth"] + [format_pct(m["growth_pct"][y]) for y in sorted_years])
 
-    rows.append(["부채총계"] + [format_eokwon(get_val_eokwon(y, "부채총계")) for y in years])
+    # EBITDA + Margin
+    rows.append(["EBITDA"] + [fu(m["ebitda"][y]) for y in sorted_years])
+    rows.append(["  Margin"] + [format_pct(m["ebitda_margin_pct"][y]) for y in sorted_years])
 
-    # 총차입금 = Debt 구성 항목 합산 (valuation 정의)
-    borrow_row = ["  총차입금"]
-    for y in years:
-        d = yearly_data.get(y, {})
-        bv = safe_sum_eokwon(y, _DEBT_KEYS)
-        if bv is None:
-            # 구성 항목 전부 None. 부채총계 추출 여부로 구분.
-            if d.get("부채총계") is not None:
-                borrow_row.append(format_eokwon(0.0))  # 실제 차입 0
-            else:
-                borrow_row.append("N/A")
-        else:
-            borrow_row.append(format_eokwon(bv))
-    rows.append(borrow_row)
+    # 영업이익 + Margin
+    rows.append(["영업이익"] + [fu(m["op_income"][y]) for y in sorted_years])
+    rows.append(["  Margin"] + [format_pct(m["op_margin_pct"][y]) for y in sorted_years])
 
-    rows.append(["자본총계"] + [format_eokwon(get_val_eokwon(y, "자본총계")) for y in years])
+    # 당기순이익 + Margin
+    rows.append(["당기순이익"] + [fu(m["net_income"][y]) for y in sorted_years])
+    rows.append(["  Margin"] + [format_pct(m["net_margin_pct"][y]) for y in sorted_years])
 
-    columns = ["(단위: 억원)"] + [str(y) for y in years]
+    # 자산총계 · 현금성 · 부채총계 · 총차입 · 자본총계
+    rows.append(["자산총계"] + [fu(m["total_assets"][y]) for y in sorted_years])
+    rows.append(["  현금성자산"] + [fu(m["cash_equiv"][y]) for y in sorted_years])
+    rows.append(["부채총계"] + [fu(m["total_liabilities"][y]) for y in sorted_years])
+    rows.append(["  총차입금"] + [fu(m["total_borrow"][y]) for y in sorted_years])
+    rows.append(["자본총계"] + [fu(m["total_equity"][y]) for y in sorted_years])
+
+    columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -1466,40 +1535,45 @@ def _build_composition_table(
     years: List[int],
     total_label: str,
     drop_empty_rows: bool = True,
+    unit_label: str = "억원",
 ) -> pd.DataFrame:
-    """항목×연도 구성표 생성. 단위: 억원."""
+    """항목×연도 구성표 생성. v15: 단위 선택가능."""
     sorted_years = sorted(years)
 
-    def get_eok(year, key):
+    def get_won(year, key):
         v = yearly_data.get(year, {}).get(key)
         scale = yearly_meta.get(year, {}).get("unit_scale", 1)
-        return to_eokwon(v, scale)
+        return won_value(v, scale)
+
+    def fu(v_won):
+        return format_unit(to_unit(v_won, unit_label), unit_label)
 
     rows = []
-    totals = {y: 0.0 for y in sorted_years}
+    totals_won = {y: 0 for y in sorted_years}
     any_total = {y: False for y in sorted_years}
 
     for label, key in items:
-        vals = {y: get_eok(y, key) for y in sorted_years}
+        vals = {y: get_won(y, key) for y in sorted_years}
         if drop_empty_rows and all(v is None for v in vals.values()):
             continue
-        rows.append([label] + [format_eokwon(vals[y]) for y in sorted_years])
+        rows.append([label] + [fu(vals[y]) for y in sorted_years])
         for y in sorted_years:
             if vals[y] is not None:
-                totals[y] += vals[y]
+                totals_won[y] += vals[y]
                 any_total[y] = True
 
-    # 합계 행 (최소 한 개의 항목이라도 값이 있는 연도만 합산)
+    # 합계 행
     total_row = [total_label]
     for y in sorted_years:
-        total_row.append(format_eokwon(totals[y]) if any_total[y] else "N/A")
+        total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
     rows.append(total_row)
 
-    columns = ["(단위: 억원)"] + [str(y) for y in sorted_years]
+    columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
     return pd.DataFrame(rows, columns=columns)
 
 
-def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
+def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int],
+                                 unit_label: str = "억원") -> pd.DataFrame:
     """현금성자산 구성표 (valuation Net Debt 차감항 후보).
 
     v14 변경:
@@ -1510,33 +1584,30 @@ def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
     """
     sorted_years = sorted(years)
 
-    def get_eok(year, key):
+    def get_won(year, key):
         v = yearly_data.get(year, {}).get(key)
         scale = yearly_meta.get(year, {}).get("unit_scale", 1)
-        return to_eokwon(v, scale)
+        return won_value(v, scale)
 
-    def won_to_eok(v):
-        if v is None or not isinstance(v, (int, float)):
-            return None
-        return round(v / 1e8)
+    def fu(v_won):
+        return format_unit(to_unit(v_won, unit_label), unit_label)
 
     rows = []
-    totals = {y: 0.0 for y in sorted_years}
+    totals_won = {y: 0 for y in sorted_years}
     any_total = {y: False for y in sorted_years}
 
     # ----- (1) 정적 BS 계정 -----
     for label, key in _CASH_COMPOSITION_ITEMS:
-        vals = {y: get_eok(y, key) for y in sorted_years}
+        vals = {y: get_won(y, key) for y in sorted_years}
         if all(v is None for v in vals.values()):
             continue
-        rows.append([label] + [format_eokwon(vals[y]) for y in sorted_years])
+        rows.append([label] + [fu(vals[y]) for y in sorted_years])
         for y in sorted_years:
             if vals[y] is not None:
-                totals[y] += vals[y]
+                totals_won[y] += vals[y]
                 any_total[y] = True
 
     # ----- (2) 주석 분해 cash-like (기타유동금융자산 풀어쓴 항목) -----
-    # 연도별 cash_like dict 수집 → 항목명(name) 합집합으로 행 생성.
     cash_like_by_year: Dict[int, Dict[str, float]] = {}
     for y in sorted_years:
         bd = yearly_meta.get(y, {}).get("other_fa_breakdown") or {}
@@ -1552,23 +1623,21 @@ def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
                 all_cash_names.append(name)
 
     if all_cash_names:
-        # 섹션 헤더 (값 칸은 비움)
         rows.append(["[기타금융자산 주석 분해 — 포함]"] + ["" for _ in sorted_years])
         for name in all_cash_names:
             row = [f"　{name}"]
             for y in sorted_years:
                 won_v = cash_like_by_year[y].get(name)
-                eok_v = won_to_eok(won_v)
-                row.append(format_eokwon(eok_v))
-                if eok_v is not None:
-                    totals[y] += eok_v
+                row.append(fu(won_v))
+                if won_v is not None:
+                    totals_won[y] += won_v
                     any_total[y] = True
             rows.append(row)
 
-    # ----- 합계 (정적 + cash-like 분해) -----
+    # 합계
     total_row = ["　합계 (현금성자산 후보 총합)"]
     for y in sorted_years:
-        total_row.append(format_eokwon(totals[y]) if any_total[y] else "N/A")
+        total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
     rows.append(total_row)
 
     # ----- (3) non_cash_like (참고용, 합계 비포함) -----
@@ -1592,28 +1661,205 @@ def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
             row = [f"　{name}"]
             for y in sorted_years:
                 won_v = non_cash_by_year[y].get(name)
-                eok_v = won_to_eok(won_v)
-                row.append(format_eokwon(eok_v))
+                row.append(fu(won_v))
             rows.append(row)
 
-    columns = ["(단위: 억원)"] + [str(y) for y in sorted_years]
+    columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
     return pd.DataFrame(rows, columns=columns)
 
 
-def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
+def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int],
+                                 unit_label: str = "억원") -> pd.DataFrame:
     """차입금 구성표 (valuation Gross Debt 가산항 후보)."""
     return _build_composition_table(
         _DEBT_COMPOSITION_ITEMS, yearly_data, yearly_meta, years,
         total_label="　합계 (총차입금 후보 합)",
+        unit_label=unit_label,
     )
+
+
+# ====================================================================
+# v15: 차트 헬퍼 (Plotly)
+# ====================================================================
+# 4개 콤보 차트 (막대+라인)·1개 다중 라인 차트
+# - 원 단위 metrics dict를 입력으로 받고, unit_label에 따라 시각적 단위 표시.
+# - 원 단위 값이 있는 연도만 그림 → N/A는 구멍으로 넘어감.
+def _import_plotly():
+    """Plotly는 선택적 import (Streamlit Cloud 다운 시간 절약)."""
+    try:
+        import plotly.graph_objects as go
+        return go
+    except Exception:
+        return None
+
+
+def _years_with_unit_values(metric_dict: Dict, sorted_years: List[int], unit_label: str):
+    """연도 순서대로 (year_label, value_in_unit) 투플 몄서 반환. None은 건너뛄."""
+    xs, ys = [], []
+    for y in sorted_years:
+        v = metric_dict.get(y)
+        if v is None:
+            continue
+        xs.append(str(y))
+        ys.append(to_unit(v, unit_label))
+    return xs, ys
+
+
+def _format_pct_label(v):
+    if v is None:
+        return ""
+    if v < 0:
+        return f"({abs(v):.1f}%)"
+    return f"{v:.1f}%"
+
+
+def _format_unit_label(v, unit_label):
+    if v is None:
+        return ""
+    spec = UNIT_SPECS.get(unit_label, UNIT_SPECS["억원"])
+    dec = spec["decimals"]
+    if dec == 0:
+        return f"{int(round(v)):,}" if v >= 0 else f"({int(round(abs(v))):,})"
+    fmt = f"{{:,.{dec}f}}"
+    return fmt.format(v) if v >= 0 else "(" + fmt.format(abs(v)) + ")"
+
+
+def _make_combo_chart(title: str, sorted_years: List[int],
+                      bar_values_won: Dict, line_pct: Dict,
+                      unit_label: str,
+                      bar_name: str, line_name: str,
+                      bar_color: str = "#1E3D6B", line_color: str = "#E5862E"):
+    """막대(금액)+라인(%) 콤보 차트."""
+    go = _import_plotly()
+    if go is None:
+        return None
+    xs_bar = [str(y) for y in sorted_years]
+    ys_bar = [to_unit(bar_values_won.get(y), unit_label) for y in sorted_years]
+    ys_line = [line_pct.get(y) for y in sorted_years]
+    bar_text = [_format_unit_label(v, unit_label) if v is not None else "" for v in ys_bar]
+    line_text = [_format_pct_label(v) for v in ys_line]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=xs_bar, y=ys_bar, name=bar_name,
+        marker_color=bar_color,
+        text=bar_text, textposition="outside",
+        textfont=dict(size=13, color=bar_color),
+        cliponaxis=False,
+        hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=xs_bar, y=ys_line, name=line_name,
+        mode="lines+markers+text",
+        line=dict(color=line_color, width=2.5),
+        marker=dict(size=9, color=line_color),
+        text=line_text, textposition="top center",
+        textfont=dict(size=12, color=line_color),
+        yaxis="y2",
+        hovertemplate=f"%{{x}}<br>{line_name}: %{{text}}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
+                   font=dict(size=18, color="#1F2937")),
+        height=460,
+        margin=dict(l=40, r=40, t=80, b=40),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=1.08, xanchor="center", x=0.5,
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=False, showline=True, linecolor="#1F2937", linewidth=1,
+                   tickfont=dict(size=13)),
+        yaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis2=dict(visible=False, overlaying="y", side="right", showgrid=False, zeroline=False),
+        bargap=0.45,
+    )
+    return fig
+
+
+def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit_label: str):
+    """재무상태 5라인 차트."""
+    go = _import_plotly()
+    if go is None:
+        return None
+    series_def = [
+        ("자산총계", "total_assets",      "#1E3D6B"),
+        ("현금성자산", "cash_equiv",      "#7DB8E8"),
+        ("부채총계", "total_liabilities", "#C7383C"),
+        ("총차입금", "total_borrow",      "#F2A6A8"),
+        ("자본총계", "total_equity",      "#2E9F5C"),
+    ]
+    fig = go.Figure()
+    for label, key, color in series_def:
+        xs, ys = _years_with_unit_values(metrics[key], sorted_years, unit_label)
+        if not xs:
+            continue
+        text_labels = [_format_unit_label(v, unit_label) for v in ys]
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, name=label,
+            mode="lines+markers+text",
+            line=dict(color=color, width=2.5),
+            marker=dict(size=9, color=color),
+            text=text_labels, textposition="top center",
+            textfont=dict(size=11, color=color),
+            hovertemplate=f"%{{x}}<br>{label}: %{{text}} {unit_label}<extra></extra>",
+        ))
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
+                   font=dict(size=18, color="#1F2937")),
+        height=520,
+        margin=dict(l=40, r=40, t=90, b=40),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        legend=dict(orientation="h", yanchor="top", y=1.10, xanchor="center", x=0.5,
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=False, showline=True, linecolor="#1F2937", linewidth=1,
+                   tickfont=dict(size=13)),
+        yaxis=dict(visible=False, showgrid=False, zeroline=False),
+    )
+    return fig
+
+
+def build_all_charts(metrics: Dict, years: List[int], unit_label: str = "억원") -> Dict:
+    """차트 5개 일괄 생성. 대시보드용 dict 반환.
+    Plotly 설치 실패 시 동일 키 구조로 None 반환.
+    """
+    sorted_years = sorted(years)
+    out = {}
+    out["revenue"] = _make_combo_chart(
+        "매출액 · 성장률", sorted_years,
+        metrics["revenue"], metrics["growth_pct"], unit_label,
+        bar_name="매출액", line_name="성장률(%)",
+    )
+    out["ebitda"] = _make_combo_chart(
+        "EBITDA · 이익률", sorted_years,
+        metrics["ebitda"], metrics["ebitda_margin_pct"], unit_label,
+        bar_name="EBITDA", line_name="이익률(%)",
+    )
+    out["op_income"] = _make_combo_chart(
+        "영업이익 · 이익률", sorted_years,
+        metrics["op_income"], metrics["op_margin_pct"], unit_label,
+        bar_name="영업이익", line_name="이익률(%)",
+    )
+    out["net_income"] = _make_combo_chart(
+        "당기순이익 · 이익률", sorted_years,
+        metrics["net_income"], metrics["net_margin_pct"], unit_label,
+        bar_name="당기순이익", line_name="이익률(%)",
+    )
+    out["balance"] = _make_balance_chart(
+        "재무상태 (자산·부채·자본 / 현금성자산·총차입금)",
+        sorted_years, metrics, unit_label,
+    )
+    return out
 
 
 # ====================================================================
 # 8) UI
 # ====================================================================
-# 사이드바 스타일
-_SIDEBAR_CSS = """
+# 사이드바 스타일 + 본문 박스(info-pill) + segmented radio 스타일
+_UI_CSS = """
 <style>
+/* 사이드바 헤더 */
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 {
     color: #1E3D6B;
@@ -1621,36 +1867,121 @@ section[data-testid="stSidebar"] h3 {
     margin-top: 0.25rem;
 }
 section[data-testid="stSidebar"] hr { margin: 8px 0; }
+
+/* 사이드바 라디오 - 가로 토글 형태 */
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    gap: 6px;
+    flex-wrap: wrap;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid #d6d6d6;
+    border-radius: 8px;
+    background: #ffffff;
+    cursor: pointer;
+    text-align: center;
+    margin: 0 !important;
+    transition: all 0.15s ease;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+    border-color: #E5862E;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label[data-checked="true"],
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
+    border: 2px solid #C7383C;
+    background: #FEEFEF;
+    font-weight: 600;
+}
+/* 라디오 동그라미 숨김 - 라벨만 표시 */
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
+    display: none;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
+    width: 100%;
+}
+
+/* 본문 헤더 둥근 박스 (info-pill) */
+.info-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 10px 0 14px 0;
+}
+.info-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    border: 1px solid #d8d8d8;
+    background: #f7f9fc;
+    font-size: 0.95rem;
+    color: #1E3D6B;
+}
+.info-pill .pill-key {
+    color: #6b7785;
+    font-size: 0.82rem;
+}
+.info-pill .pill-val {
+    font-weight: 700;
+}
+.info-pill.pill-primary {
+    background: #1E3D6B;
+    color: #ffffff;
+    border-color: #1E3D6B;
+}
+.info-pill.pill-primary .pill-key { color: #c9d4e3; }
+.info-pill.pill-accent {
+    background: #FEEFEF;
+    border-color: #E5862E;
+    color: #C7383C;
+}
+.info-pill.pill-accent .pill-key { color: #9a5a2b; }
 </style>
 """
-st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
-st.sidebar.markdown("### 검색 조건")
+st.markdown(_UI_CSS, unsafe_allow_html=True)
 
-company_input = st.sidebar.text_input("회사명 또는 코드", placeholder="예: 삼성전자 / 005930 / 은산해운항공")
+# ----- 좌측 사이드바: 조회 옵션 (토글 3그룹) -----
+st.sidebar.markdown("### ⚙️ 조회 옵션")
 
-period_label = st.sidebar.selectbox(
-    "조회 기간",
-    options=["최근 5년", "최근 10년", "최근 20년", "최대 (2015~)"],
+st.sidebar.markdown("**재무제표 구분**")
+fs_label = st.sidebar.radio(
+    "재무제표 구분",
+    ["연결", "별도"],
     index=0,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="fs_radio",
 )
-period_map = {"최근 5년": 5, "최근 10년": 10, "최근 20년": 20, "최대 (2015~)": 99}
+fs_div_target = "CFS" if fs_label == "연결" else "OFS"
 
-fs_label = st.sidebar.radio("재무제표 구분", ["연결재무제표(CFS)", "별도재무제표(OFS)"], index=0)
-fs_div_target = "CFS" if "연결" in fs_label else "OFS"
+st.sidebar.markdown("**조회 기간**")
+period_label = st.sidebar.radio(
+    "조회 기간",
+    ["5년", "10년", "20년", "최대"],
+    index=0,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="period_radio",
+)
+period_map = {"5년": 5, "10년": 10, "20년": 20, "최대": 99}
+
+st.sidebar.markdown("**표시 단위**")
+unit_label = st.sidebar.radio(
+    "표시 단위",
+    ["백만원", "억원", "십억원"],
+    index=1,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="unit_radio",
+)
+
+st.sidebar.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
 
 current_year = datetime.now().year
-end_year = st.sidebar.number_input(
-    "종료 연도", min_value=2015, max_value=current_year,
-    value=current_year - 1, step=1,
-)
-
-search_btn = st.sidebar.button("1️⃣ 회사 검색", use_container_width=True)
-
-refresh_cache_btn = st.sidebar.button(
-    "🔄 회사 목록 캐시 새로고침",
-    help="사명이 변경된 회사가 검색되지 않을 때 사용. corp_code.xml을 다시 다운로드합니다.",
-    use_container_width=True,
-)
+end_year = current_year - 1  # 종료연도는 직전 회계연도 자동 고정
 
 # ====================================================================
 # 9) 회사 검색 (사명 변경 대응 다층 fallback)
@@ -1825,11 +2156,35 @@ def search_companies(_dart, _api_key: str, query: str) -> pd.DataFrame:
     return primary_df
 
 
+# ====================================================================
+# 10) 본문 UI - 회사 검색 + 추출 + 결과 렌더링
+# ====================================================================
+
+# ----- 본문 상단: 기업 검색 영역 -----
+st.markdown("<div class='hpe-section'>🔎 기업 검색</div>", unsafe_allow_html=True)
+
+search_col1, search_col2, search_col3 = st.columns([5, 1.2, 1.2])
+with search_col1:
+    company_input = st.text_input(
+        "회사명 또는 고유번호",
+        placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885",
+        label_visibility="collapsed",
+        key="company_input",
+    )
+with search_col2:
+    search_btn = st.button("🔍 검색", use_container_width=True, type="primary")
+with search_col3:
+    refresh_cache_btn = st.button(
+        "🔄 캐시",
+        help="사명이 업데이트 안될 때 눌러 corp_code.xml 재다운로드",
+        use_container_width=True,
+    )
+
 # 캐시 새로고침 (함수 정의 이후에서 처리)
 if refresh_cache_btn:
     download_corp_code_xml.clear()
     search_companies.clear()
-    st.sidebar.success("캐시를 비웠습니다. 다시 검색해주세요.")
+    st.success("캐시를 비웠습니다. 다시 검색해주세요.")
 
 if search_btn:
     if not company_input.strip():
@@ -1840,7 +2195,7 @@ if search_btn:
     if companies.empty:
         st.error(
             f"'{company_input}'에 해당하는 회사를 찾을 수 없습니다.\n\n"
-            "💡 사명이 최근 변경된 경우 좌측 사이드바 하단의 '회사 목록 캐시 새로고침'을 시도해보세요."
+            "💡 사명이 최근 변경된 경우 우측 '🔄 캐시' 버튼을 눌러보세요."
         )
         st.stop()
     st.session_state["companies"] = companies
@@ -1886,9 +2241,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     if corp_cls == "E":
         st.warning(
-            "ℹ️ 외감 비상장기업입니다. 감사보고서의 HTML 본문(재무상태표/손익계산서/현금흐름표)을 "
-            "직접 파싱합니다. 단위는 헤더 표시를 기준으로 자동 감지하며, 별도/연결 우선순위는 "
-            "사이드바 설정을 따릅니다."
+            "ℹ️ 외감 비상장기업입니다. 감사보고서의 HTML 본문을 직접 파싱합니다. "
+            "단위는 감사보고서 헤더 기준 자동 감지, 표시 단위는 좌측 사이드바 설정을 따릅니다."
         )
 
     extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True)
@@ -1897,11 +2251,6 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
-
-        st.markdown(
-            f"<div class='hpe-section'>{corp_name} | {start_year}~{end_year} | {fs_div_target}</div>",
-            unsafe_allow_html=True,
-        )
 
         progress = st.progress(0.0)
         status = st.empty()
@@ -1919,31 +2268,96 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         progress.empty()
         status.empty()
 
-        # 데이터 소스 수집 (하단 expander에서 표시)
+        # -------- 연결/별도 실제 사용 연도별 추적 --------
+        per_year_fs = {}  # {year: "CFS"|"OFS"|"-"}
+        fallback_years = []  # 연결 요청이었으나 별도를 쓴 연도
+        for y in years:
+            meta = yearly_meta.get(y, {}) or {}
+            rpt = (meta.get("report_nm") or "")
+            src = (meta.get("source") or "")
+            is_cfs = ("연결" in rpt) or ("CFS" in src.upper())
+            is_ofs = ("별도" in rpt) or ("OFS" in src.upper())
+            if is_cfs and not is_ofs:
+                per_year_fs[y] = "CFS"
+            elif is_ofs and not is_cfs:
+                per_year_fs[y] = "OFS"
+                if fs_div_target == "CFS":
+                    fallback_years.append(y)
+            else:
+                per_year_fs[y] = fs_div_target if (meta.get("source") and meta.get("source") != "NONE") else "-"
+
+        valid_fs = [v for v in per_year_fs.values() if v in ("CFS", "OFS")]
+        if valid_fs:
+            main_fs = max(set(valid_fs), key=valid_fs.count)
+        else:
+            main_fs = fs_div_target
+        main_fs_label = "연결" if main_fs == "CFS" else "별도"
+
+        # -------- 헤더 둥근 박스 4개 --------
+        period_disp = f"{start_year}~{end_year}"
+        pill_html = (
+            "<div class='info-pill-row'>"
+            f"<div class='info-pill pill-primary'><span class='pill-key'>회사</span> <span class='pill-val'>{corp_name}</span></div>"
+            f"<div class='info-pill'><span class='pill-key'>구분</span> <span class='pill-val'>{main_fs_label}재무제표</span></div>"
+            f"<div class='info-pill pill-accent'><span class='pill-key'>단위</span> <span class='pill-val'>{unit_label}</span></div>"
+            f"<div class='info-pill'><span class='pill-key'>기간</span> <span class='pill-val'>{period_disp}</span></div>"
+            "</div>"
+        )
+        st.markdown(pill_html, unsafe_allow_html=True)
+
+        # 연결 fallback 안내
+        if fs_div_target == "CFS" and fallback_years:
+            st.warning(
+                f"⚠️ 연결재무제표를 요청했으나 다음 연도는 별도재무제표로 대체되었습니다: "
+                f"{', '.join(map(str, fallback_years))} · 해당 연도에는 연결보고서가 공시되지 않아 별도를 표시."
+            )
+
+        # -------- 데이터 소스 수집 --------
         source_info = []
         for y in years:
             meta = yearly_meta.get(y, {})
             src = meta.get("source", "NONE")
             source_info.append({
                 "연도": y,
+                "구분": per_year_fs.get(y, "-"),
                 "데이터 소스": src,
                 "단위 스케일": meta.get("unit_scale", "-"),
                 "보고서": meta.get("report_nm", "-"),
                 "접수번호": meta.get("rcept_no", "-"),
                 "비고": meta.get("error", "-"),
             })
-        # 요약 템플릿 표
+
+        # -------- 요약 재무제표 --------
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
-        template_df = build_template_table(yearly_data, yearly_meta, years)
+        template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
         st.dataframe(template_df, use_container_width=True, hide_index=True)
         st.caption(
+            f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
             "· EBITDA = 영업이익 + (유형자산감가상각비 + 무형자산상각비 + 사용권자산상각비). 주석 표기 상각비 누락 가능."
         )
 
-        # Valuation 관점 구성표 — 현금성자산 / 차입금
-        cash_comp_df = build_cash_composition_table(yearly_data, yearly_meta, years)
-        debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years)
+        # -------- 차트 5개 --------
+        st.markdown("<div class='hpe-section'>📊 트렌드 차트</div>", unsafe_allow_html=True)
+        try:
+            metrics = compute_yearly_metrics(yearly_data, yearly_meta, years)
+            charts = build_all_charts(metrics, years, unit_label=unit_label)
+            chart_order = ["revenue", "ebitda", "op_income", "net_income", "balance"]
+            for key in chart_order:
+                fig = charts.get(key)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+        except ImportError:
+            st.warning(
+                "⚠️ plotly 패키지가 설치되지 않아 차트를 표시할 수 없습니다. "
+                "requirements.txt에 plotly 추가 후 재배포하세요."
+            )
+        except Exception as e:
+            st.warning(f"차트 렌더링 오류: {e}")
+
+        # -------- Valuation 구성표 --------
+        cash_comp_df = build_cash_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
+        debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -1970,10 +2384,10 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                 f"데이터 미수집 연도: {', '.join(map(str, empty_years))} · 하단 '데이터 소스 추적' 섹션 '비고' 컬럼 확인."
             )
 
-        # 엑셀 다운로드
+        # -------- 엑셀 다운로드 --------
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            template_df.to_excel(writer, sheet_name="5개년_요약", index=False)
+            template_df.to_excel(writer, sheet_name=f"요약_{unit_label}", index=False)
             cash_comp_df.to_excel(writer, sheet_name="현금성자산_구성", index=False)
             debt_comp_df.to_excel(writer, sheet_name="차입금_구성", index=False)
             raw_rows = []
@@ -1991,12 +2405,12 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         st.download_button(
             label="📥 엑셀 다운로드",
             data=output.getvalue(),
-            file_name=f"{corp_name}_{start_year}_{end_year}_{fs_div_target}.xlsx",
+            file_name=f"{corp_name}_{start_year}_{end_year}_{main_fs}_{unit_label}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
 
-        # ----- 하단: 검증 · 파싱 디버그 · 트래커 영역 -----
+        # -------- 하단: 검증 · 디버그 --------
         st.markdown(
             "<div class='hpe-debug-header'>⚛️ 검증 · 파싱 디버그 · 소스 추적</div>",
             unsafe_allow_html=True,
@@ -2019,19 +2433,12 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                             if u:
                                 st.caption(f"{stmt}: {u}")
 
-        st.divider()
-        st.info(
-            "🔜 다음 단계: PDF 본문 검증\n"
-            "외감 HTML 파싱 결과는 표 1(본문)만 사용하며, 주석 표기 항목(상각비 등)은 누락 가능."
-        )
-
 st.sidebar.divider()
 with st.sidebar.expander("ℹ️ 데이터 처리 방식"):
     st.markdown(
         "**상장사(Y/K/N)**: XBRL API 우선 (3년 묶음 호출)\n\n"
         "**외감(E)**: 감사보고서 `sub_docs` HTML viewer 직접 파싱\n"
         "- 재무상태표 / 손익계산서 / 현금흐름표 본문 표 1\n"
-        "- 단위는 헤더에서 자동 감지\n"
-        "- 컬럼: `제 N(당) 기` / `제 N(당) 기.1` 모두 후보\n\n"
+        "- 단위는 헤더에서 자동 감지\n\n"
         "**연결/별도 선택**: 보고서명에 '연결' 포함 여부로 우선순위"
     )
