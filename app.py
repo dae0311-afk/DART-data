@@ -636,13 +636,12 @@ def detect_unit_from_tables(tables: list) -> int:
     return 1
 
 
-def find_da_from_notes(tables: list) -> Dict[str, Optional[Dict]]:
+def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) -> Dict[str, Optional[Dict]]:
     """
-    감사보고서의 모든 표(통합 페이지/주석 페이지)에서 D&A 후보를 찾는다.
-    '비용성격별 분류' 등의 주석 표는 통상 '구분 | 당기 | 전기' 형태이고,
-    유형자산 변동표(기초/증가/감소/기말)와는 구분된다.
-    동일 키에 여러 후보가 있으면 (판관비 분석 vs 비용성격별 분류) 가장 큰 값을 선택.
-    반환: {유형자산감가상각비/무형자산상각비/사용권자산상각비/감가상각비_합산: {value_in_won, ...}}
+    감사보고서의 모든 표에서 D&A 후보를 찾는다.
+    v16: tables_with_units 인자가 주어지면 DOM 기반 단위 상속 결과를 우선 사용.
+    그렇지 않으면 구 방식(이웃 표 텍스트 주변 검색) 적용.
+    동일 키에 여러 후보가 있으면 value_in_won 기준 최대값 선택.
     """
     targets = {
         "감가상각비": ["감가상각비"],
@@ -651,23 +650,29 @@ def find_da_from_notes(tables: list) -> Dict[str, Optional[Dict]]:
         "사용권자산상각비": ["사용권자산상각비", "사용권자산감가상각비"],
     }
 
-    # 표별 단위 추정 (직전 3개 표 텍스트에서 '단위' 탐색)
-    unit_per_table = {}
-    for i in range(len(tables)):
-        local_text = ""
-        for j in range(max(0, i - 3), i + 1):
-            if j >= len(tables):
-                continue
-            try:
-                local_text += " ".join(tables[j].fillna("").astype(str).values.flatten().tolist())
-            except Exception:
-                continue
-        if re.search(r"단위\s*[:：]?\s*백만\s*원", local_text):
-            unit_per_table[i] = 1_000_000
-        elif re.search(r"단위\s*[:：]?\s*천\s*원", local_text):
-            unit_per_table[i] = 1_000
-        else:
-            unit_per_table[i] = 1
+    # tables_with_units가 제공되면 그갟을 우선 사용
+    if tables_with_units:
+        # tables 리스트는 (table, unit) 페어의 table 부분과 동일해야 함 (idx 일치)
+        tables = [pair[0] for pair in tables_with_units]
+        unit_per_table = {i: pair[1] for i, pair in enumerate(tables_with_units)}
+    else:
+        # 구 방식: 표별 단위 추정 (직전 3개 표 텍스트에서 '단위' 탐색)
+        unit_per_table = {}
+        for i in range(len(tables)):
+            local_text = ""
+            for j in range(max(0, i - 3), i + 1):
+                if j >= len(tables):
+                    continue
+                try:
+                    local_text += " ".join(tables[j].fillna("").astype(str).values.flatten().tolist())
+                except Exception:
+                    continue
+            if re.search(r"단위\s*[:：]?\s*백만\s*원", local_text):
+                unit_per_table[i] = 1_000_000
+            elif re.search(r"단위\s*[:：]?\s*천\s*원", local_text):
+                unit_per_table[i] = 1_000
+            else:
+                unit_per_table[i] = 1
 
     def col_norm(c):
         return str(c).replace(" ", "").replace("　", "")
@@ -744,6 +749,84 @@ def fetch_all_tables_from_audit(sub_docs: pd.DataFrame) -> list:
         except Exception:
             continue
     return tables
+
+
+def fetch_audit_tables_with_units(sub_docs: pd.DataFrame) -> List[Tuple]:
+    """v16: 감사보고서 통합·주석 페이지에서 (table, unit_scale) 페어 리스트 반환.
+
+    이유: pd.read_html은 표 셀 내부만 읽어 표 사이 텍스트 노드의 '단위: 원/천원/백만원'
+    마커를 놓치는 경우가 많음 (한국 외감사는 주석 표가 통상 천원 단위이나 명시 없음).
+    BeautifulSoup으로 DOM 순회하며 (table 등장 제에 직전에 마지막으로 등장한 '단위: X' 텍스트를
+    상속) 적용.
+
+    을면 해당 표의 unit_scale은 이전 상속 값이얰 이어진다. 최소값=1(원).
+    """
+    if sub_docs is None or sub_docs.empty:
+        return []
+    out = []
+    norm = sub_docs["title"].astype(str).str.replace(" ", "").str.replace("　", "")
+    urls = []
+    matched = sub_docs[norm.str.contains("재무제표", na=False)]
+    urls.extend(matched.head(2)["url"].tolist())
+    matched = sub_docs[norm == "주석"]
+    urls.extend(matched.head(2)["url"].tolist())
+
+    UNIT_RE = re.compile(r"단위\s*[:：]?\s*[\(\[]?\s*(백만\s*원|천\s*원|원)\b")
+
+    def _unit_str_to_int(s: str) -> int:
+        s_norm = s.replace(" ", "")
+        if "백만원" in s_norm: return 1_000_000
+        if "천원" in s_norm: return 1_000
+        return 1
+
+    try:
+        from bs4 import BeautifulSoup
+        import io as _io
+    except Exception:
+        # bs4 없으면 구한 경로로 폴백 (단위 1로 명시)
+        for u in urls:
+            try:
+                for t in pd.read_html(u):
+                    out.append((t, 1))
+            except Exception:
+                continue
+        return out
+
+    for u in urls:
+        try:
+            r = requests.get(u, timeout=15)
+            r.encoding = r.encoding or "utf-8"
+            html = r.text
+        except Exception:
+            continue
+        soup = BeautifulSoup(html, "lxml")
+        body = soup.find("body") or soup
+
+        current_unit = 1
+        for el in body.descendants:
+            name = getattr(el, "name", None)
+            if name is None:
+                # 텍스트 노드—단위 마커 검색
+                try:
+                    txt = str(el)
+                except Exception:
+                    continue
+                m = UNIT_RE.search(txt)
+                if m:
+                    current_unit = _unit_str_to_int(m.group(1))
+            elif name == "table":
+                # 표 자체 텍스트에도 명시가 있을 수 있음 → 더 높은 우선 적용
+                t_txt = el.get_text(" ", strip=True)
+                m = UNIT_RE.search(t_txt[:300])
+                table_unit = _unit_str_to_int(m.group(1)) if m else current_unit
+                # 표 파싱
+                try:
+                    sub_tables = pd.read_html(_io.StringIO(str(el)))
+                    for t in sub_tables:
+                        out.append((t, table_unit))
+                except Exception:
+                    pass
+    return out
 
 
 # ====================================================================
@@ -1044,7 +1127,16 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         urls["IS"] = find_statement_url(sub_docs, "포괄손익계산서")
 
     dfs = {k: parse_html_statement(u) if u else None for k, u in urls.items()}
-    unit_scale = detect_unit_from_header(urls["BS"]) if urls["BS"] else 1
+
+    # 재무제표별 단위 개별 감지 (v16 fix: CF가 BS와 다른 단위일 경우 대응)
+    # 감사보고서는 통상 BS/IS는 원 단위, CF는 천원 단위인 경우가 있음
+    unit_scales = {
+        "BS": detect_unit_from_header(urls["BS"]) if urls["BS"] else 1,
+        "IS": detect_unit_from_header(urls["IS"]) if urls["IS"] else 1,
+        "CF": detect_unit_from_header(urls["CF"]) if urls["CF"] else 1,
+    }
+    # 메이타에는 대표값으로 BS 단위를 높다 (하위호환)
+    unit_scale = unit_scales["BS"] or 1
 
     # 2차: 패턴 B - 통합 페이지 fallback
     used_combined = False
@@ -1056,25 +1148,38 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
             for k in ["BS", "IS", "CF"]:
                 if dfs[k] is None and classified.get(k) is not None:
                     dfs[k] = classified[k]
-            # 단위 감지 (전체 페이지 표에서)
+            # 단위 감지 (전체 페이지 표에서) - 통합 페이지는 보통 동일 단위
             try:
                 all_tables = pd.read_html(combined_url)
-                unit_scale = detect_unit_from_tables(all_tables)
+                combined_unit = detect_unit_from_tables(all_tables)
+                unit_scale = combined_unit
+                for k in ("BS", "IS", "CF"):
+                    unit_scales[k] = combined_unit
             except Exception:
                 pass
 
-    # 데이터 추출
+    # 데이터 추출 (각 값을 대표 단위 unit_scale 기준으로 정규화)
     result_data = {}
     debug = []
     for key, keywords in ACCOUNT_KEYWORDS.items():
         stmt = STATEMENT_OF[key]
         df = dfs.get(stmt)
         val = find_account_in_html(df, keywords, year_offset=0)
+        # v16 fix: 단위 불일치 보정 — 각 재무제표의 고유 단위로 원 환산 후
+        # 대표 단위(unit_scale)로 다시 나눠 저장 → ev() 계산 일관성 확보
+        if val is not None and stmt in unit_scales:
+            stmt_unit = unit_scales[stmt] or 1
+            if stmt_unit != unit_scale and unit_scale:
+                # 원활산: val * stmt_unit → 추출값을 대표 단위 기준으로 재조정
+                val_in_won = val * stmt_unit
+                val = int(val_in_won / unit_scale)
         result_data[key] = val
         debug.append({
             "항목": key,
             "재무제표": stmt,
-            "값(원단위)": val,
+            "값(대표단위기준)": val,
+            "표단위": unit_scales.get(stmt, 1),
+            "대표단위": unit_scale,
             "발견여부": "✓" if val is not None else "—",
         })
 
@@ -1089,10 +1194,19 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
     da_fallback_used = False
     da_fallback_info = {}
     if da_missing:
-        # 통합/주석 페이지 표 전체 수집
-        all_audit_tables = fetch_all_tables_from_audit(sub_docs)
+        # v16: DOM 기반 단위 상속 적용된 (table, unit_scale) 페어 수집
+        # bs4 설치/HTML 파싱 실패 시 구 함수로 폴백
+        try:
+            audit_pairs = fetch_audit_tables_with_units(sub_docs)
+        except Exception:
+            audit_pairs = []
+        if audit_pairs:
+            all_audit_tables = [p[0] for p in audit_pairs]
+            notes_da = find_da_from_notes(all_audit_tables, tables_with_units=audit_pairs)
+        else:
+            all_audit_tables = fetch_all_tables_from_audit(sub_docs)
+            notes_da = find_da_from_notes(all_audit_tables) if all_audit_tables else {}
         if all_audit_tables:
-            notes_da = find_da_from_notes(all_audit_tables)
             # 매핑: 주석 키 → result_data 키
             mapping = {
                 "_유형자산감가상각비": "감가상각비",
