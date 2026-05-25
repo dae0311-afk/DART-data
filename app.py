@@ -941,6 +941,34 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
 # ====================================================================
 # 7) 템플릿 표 생성
 # ====================================================================
+# Valuation 정의: 요약표의 "현금성자산" / "총차입금"은 아래 구성 항목 합으로 정의됨.
+# 구성표와 동일한 소스이므로 합계가 일치해야 함.
+_CASH_COMPOSITION_ITEMS = [
+    ("현금및현금성자산", "현금성자산"),
+    ("단기금융상품", "_단기금융상품"),
+    ("단기투자자산", "_단기투자자산"),
+    ("당기손익-공정가치측정금융자산(유동)", "_당기손익공정가치_유동"),
+    ("매도가능금융자산/매도가능증권(유동)", "_매도가능금융자산_유동"),
+    ("기타포괄손익-공정가치측정금융자산(유동)", "_기타포괄손익공정가치_유동"),
+    ("장기금융상품/장기성예금", "_장기금융상품"),
+]
+
+_DEBT_COMPOSITION_ITEMS = [
+    ("단기차입금", "_단기차입금"),
+    ("유동성장기부채(차입금/사채)", "_유동성장기부채"),
+    ("장기차입금", "_장기차입금"),
+    ("사채(일반)", "_사채"),
+    ("유동리스부채", "_유동리스부채"),
+    ("비유동리스부채", "_비유동리스부채"),
+    ("전환사채(CB)", "_전환사채"),
+    ("신주인수권부사채(BW)", "_신주인수권부사채"),
+    ("교환사채(EB)", "_교환사채"),
+]
+
+_CASH_KEYS = [k for _, k in _CASH_COMPOSITION_ITEMS]
+_DEBT_KEYS = [k for _, k in _DEBT_COMPOSITION_ITEMS]
+
+
 def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
     rows = []
 
@@ -1019,27 +1047,43 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
         for y in years
     ])
 
-    # 자산총계 / 현금성 / 부채 / 차입금 / 자본
+    # 자산총계 / 현금성(valuation 정의) / 부채 / 총차입금(valuation 정의) / 자본
     rows.append(["자산총계"] + [format_eokwon(get_val_eokwon(y, "자산총계")) for y in years])
-    rows.append(["  현금성자산"] + [format_eokwon(get_val_eokwon(y, "현금성자산")) for y in years])
-    rows.append(["부채총계"] + [format_eokwon(get_val_eokwon(y, "부채총계")) for y in years])
-    # 총차입금: 4개 항목 모두 None이고 부채총계가 정상 추출된 경우 → "0" 표시
-    # (실제 대차대조표에 차입금 항목 자체가 없는 케이스)
-    # BS 추출 자체가 실패한 경우에만 N/A
-    borrow_row = ["  총차입금"]
-    borrow_keys = ["_단기차입금", "_유동성장기부채", "_장기차입금", "_사채"]
+
+    # 현금성자산 = Cash 구성 항목 합산 (valuation 정의)
+    # 전부 None 이면 BS 추출 자체가 실패한 것. 그때만 N/A.
+    # 하나라도 값이 있으면 합산 결과 표시 (나머지는 공시에 해당 없는 것으로 간주).
+    cash_row = ["  현금성자산"]
     for y in years:
         d = yearly_data.get(y, {})
-        bv = safe_sum_eokwon(y, borrow_keys)
+        cv = safe_sum_eokwon(y, _CASH_KEYS)
+        if cv is None:
+            # 자산총계가 추출된 경우에만 0 표시
+            if d.get("자산총계") is not None:
+                cash_row.append(format_eokwon(0.0))
+            else:
+                cash_row.append("N/A")
+        else:
+            cash_row.append(format_eokwon(cv))
+    rows.append(cash_row)
+
+    rows.append(["부채총계"] + [format_eokwon(get_val_eokwon(y, "부채총계")) for y in years])
+
+    # 총차입금 = Debt 구성 항목 합산 (valuation 정의)
+    borrow_row = ["  총차입금"]
+    for y in years:
+        d = yearly_data.get(y, {})
+        bv = safe_sum_eokwon(y, _DEBT_KEYS)
         if bv is None:
-            # 4개 모두 None. 부채총계 추출 여부로 구분.
+            # 구성 항목 전부 None. 부채총계 추출 여부로 구분.
             if d.get("부채총계") is not None:
-                borrow_row.append(format_eokwon(0.0))  # 실제 차입금 0
+                borrow_row.append(format_eokwon(0.0))  # 실제 차입 0
             else:
                 borrow_row.append("N/A")
         else:
             borrow_row.append(format_eokwon(bv))
     rows.append(borrow_row)
+
     rows.append(["자본총계"] + [format_eokwon(get_val_eokwon(y, "자본총계")) for y in years])
 
     columns = ["(단위: 억원)"] + [str(y) for y in years]
@@ -1049,32 +1093,8 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
 # --------------------------------------------------------------------
 # Valuation 관점 현금성자산 / 차입금 구성표
 # --------------------------------------------------------------------
-# 설계 원칙:
-# 1) 요약표의 "현금성자산"/"총차입금"은 좌은 정의 그대로 유지(현금및현금성자산 단독, 차입금 4종 합산).
-# 2) 구성표는 valuation 시 가감판단용 상세 접원 제공. 합계 행은 구성표 기준 합이므로 요약표와 다를 수 있음 (의도된 차이).
-# 3) 전년도 가로지르고 결측이면 "-" 표시. 행 전체가 결측이면 표시 생략.
-
-_CASH_COMPOSITION_ITEMS = [
-    ("현금및현금성자산", "현금성자산"),
-    ("단기금융상품", "_단기금융상품"),
-    ("단기투자자산", "_단기투자자산"),
-    ("당기손익-공정가치측정금융자산(유동)", "_당기손익공정가치_유동"),
-    ("매도가능금융자산/매도가능증권(유동)", "_매도가능금융자산_유동"),
-    ("기타포괄손익-공정가치측정금융자산(유동)", "_기타포괄손익공정가치_유동"),
-    ("장기금융상품/장기성예금", "_장기금융상품"),
-]
-
-_DEBT_COMPOSITION_ITEMS = [
-    ("단기차입금", "_단기차입금"),
-    ("유동성장기부채(차입금/사채)", "_유동성장기부채"),
-    ("장기차입금", "_장기차입금"),
-    ("사채(일반)", "_사채"),
-    ("유동리스부채", "_유동리스부채"),
-    ("비유동리스부채", "_비유동리스부채"),
-    ("전환사채(CB)", "_전환사채"),
-    ("신주인수권부사채(BW)", "_신주인수권부사채"),
-    ("교환사채(EB)", "_교환사채"),
-]
+# 항목 리스트는 위 _CASH_COMPOSITION_ITEMS / _DEBT_COMPOSITION_ITEMS를 공유.
+# 요약표의 현금성자산·총차입금과 구성표 합계는 동일한 소스 → 값 일치.
 
 
 def _build_composition_table(
@@ -1449,19 +1469,19 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         cash_comp_df = build_cash_composition_table(yearly_data, yearly_meta, years)
         debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years)
 
-        st.markdown("##### 현금성자산 구성표 (Valuation 용)")
+        st.markdown("##### 현금성자산 구성표 (Valuation 정의 상세)")
         st.dataframe(cash_comp_df, use_container_width=True, hide_index=True)
         st.caption(
-            "· 요약표 '현금성자산'은 현금및현금성자산 단독. 나머지 항목은 valuation 시 차감항으로 포함 여부를 차감 판단.\n"
-            "· 사용제한·담보제공된 항목은 상세 주석 별도 확인 필요."
+            "· 요약표 '현금성자산' = 이 구성표 합계 (현금및현금성자산 + 단기금융상품 + 단기투자자산 + 각종 단기 금융자산 + 장기금융상품).\n"
+            "· 사용제한·담보제공된 항목 존재 가능 → 최종 valuation 시 차감항 조정 필요 (주석 확인)."
         )
 
-        st.markdown("##### 차입금 구성표 (Valuation 용)")
+        st.markdown("##### 차입금 구성표 (Valuation 정의 상세)")
         st.dataframe(debt_comp_df, use_container_width=True, hide_index=True)
         st.caption(
-            "· 요약표 '총차입금' = 단기차입금 + 장기차입금 + 사채 + 유동성장기부채 (좌은 정의).\n"
-            "· 리스부채·CB·BW·EB 포함 여부는 IFRS 16 적용 여부 및 메자닌 구조에 따라 valuation 시 구성표에서 가감판단.\n"
-            "· 주석이나 본문에만 기재된 차입 세부는 별도 검증 필요."
+            "· 요약표 '총차입금' = 이 구성표 합계 (단기차입금 + 유동성장기부채 + 장기차입금 + 사채 + 리스부채 + CB/BW/EB).\n"
+            "· 리스부채 포함. IFRS 16 미적용 외감사·구 회계기준 채택 기업은 자동으로 0이 되므로 완전 추가 조정 필요.\n"
+            "· 주석·본문에만 기재된 차입 세부는 별도 검증 필요."
         )
 
         # 결측 안내
