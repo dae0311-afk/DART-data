@@ -117,10 +117,12 @@ ACCOUNT_KEYWORDS = {
         "기타포괄손익-공정가치측정금융자산",
     ],
     "_장기금융상품": ["장기금융상품", "장기성예금"],
-    # K-IFRS 외감사 통합 계정 — 단기금융상품/정기예금/MMF 등이 여기 포함되는 사례가 며명함
-    # 주의: 대여금·보증금·파생상품 등이 섞일 수 있으므로 주석 확인 필수
-    "_기타유동금융자산": ["기타유동금융자산"],
-    "_기타비유동금융자산": ["기타비유동금융자산"],
+    # K-IFRS 외감사 통합 계정 "기타유동금융자산"은 통째로 합산하지 않는다 (v14).
+    # 정기예금/단기금융상품 등 cash-like 항목만 주석 분해(parse_other_fa_breakdown)로
+    # 별도 추출해 Cash 합계에 포함. 비유동 통합 계정(기타비유동금융자산)은
+    # 통상 보증금·대여금이 대부분이므로 valuation 기준 cash 후보로 다루지 않는다.
+    # 본 항목은 BS 디버그 표시용으로만 유지.
+    "_기타유동금융자산_표시용": ["기타유동금융자산"],
 
     # ----- Gross Debt 구성 (valuation 가산항) -----
     "_단기차입금": ["단기차입금"],
@@ -154,8 +156,7 @@ SJ_DIV_MAP = {
     "_매도가능금융자산_유동": ["BS"],
     "_기타포괄손익공정가치_유동": ["BS"],
     "_장기금융상품": ["BS"],
-    "_기타유동금융자산": ["BS"],
-    "_기타비유동금융자산": ["BS"],
+    "_기타유동금융자산_표시용": ["BS"],
     "_단기차입금": ["BS"],
     "_유동성장기부채": ["BS"],
     "_장기차입금": ["BS"],
@@ -185,8 +186,7 @@ STATEMENT_OF = {
     "_매도가능금융자산_유동": "BS",
     "_기타포괄손익공정가치_유동": "BS",
     "_장기금융상품": "BS",
-    "_기타유동금융자산": "BS",
-    "_기타비유동금융자산": "BS",
+    "_기타유동금융자산_표시용": "BS",
     "_단기차입금": "BS",
     "_유동성장기부채": "BS",
     "_장기차입금": "BS",
@@ -701,6 +701,271 @@ def fetch_all_tables_from_audit(sub_docs: pd.DataFrame) -> list:
     return tables
 
 
+# ====================================================================
+# v14: "기타유동금융자산" 주석 분해
+# K-IFRS 외감사의 통합 계정 "기타유동금융자산" 안에 정기예금/단기금융상품/MMF 등
+# cash-like 항목과 단기대여금/보증금 등 비-cash 항목이 섞일 수 있음.
+# v13 이전: 통째 Cash 합산 (대여금/보증금 포함) → 잘못된 현금성자산 과대계산.
+# v14: 주석 표에서 항목별 분해, cash-like 화이트리스트만 Cash에 합산.
+# "기타비유동금융자산"은 사용자 지시에 따라 처리 대상에서 제외 (항상 보증금 위주로 간주).
+# ====================================================================
+_CASH_LIKE_PATTERNS = [
+    "정기예금", "단기금융상품", "단기금융자산",
+    "MMF", "머니마켓펀드", "양도성예금증서", "환매조건부채권",
+    "금융기관예치금", "정기예적금", "특정금전신탁",
+]
+# 비-cash 대상: 자산성 항목만 잔의. 예수보증금(부채)은 제외.
+_NON_CASH_PATTERNS = [
+    "임차보증금", "임대보증금", "보증금",
+    "단기대여금", "장기대여금", "장단기대여금", "대여금",
+    "파생상품", "파생금융자산",
+    "출자금", "지분증권",
+]
+# 부채/비금융자산 표로 주적되는 키워드 — 자산 분해표가 아닌지 배제
+_LIABILITY_INDICATORS = [
+    "리스부채", "차입금", "사채", "미지급금", "미지급비용",
+    "매입채무", "예수금", "예수보증금",
+    "충당부채", "판매보증충당부채",
+    "원/부재료", "급여", "퇴직급여", "복리후생",
+]
+
+
+def _classify_other_fa_item(name: str) -> str:
+    """항목명 → 'cash_like' / 'non_cash' / 'unknown'"""
+    n = str(name).replace(" ", "").replace("　", "")
+    for p in _CASH_LIKE_PATTERNS:
+        if p in n:
+            return "cash_like"
+    for p in _NON_CASH_PATTERNS:
+        if p in n:
+            return "non_cash"
+    return "unknown"
+
+
+def _norm_cell(s) -> str:
+    return str(s).replace(" ", "").replace("　", "").replace("\xa0", "")
+
+
+def _detect_table_unit_local(tables: list, idx: int) -> int:
+    """표 idx 주변(이전 3개) 텍스트에서 '단위: 천원/백만원' 감지."""
+    blob = ""
+    for j in range(max(0, idx - 3), idx + 1):
+        if j >= len(tables):
+            continue
+        try:
+            blob += " ".join(tables[j].fillna("").astype(str).values.flatten().tolist())
+        except Exception:
+            continue
+    if re.search(r"단위\s*[:：]?\s*백만\s*원", blob):
+        return 1_000_000
+    if re.search(r"단위\s*[:：]?\s*천\s*원", blob):
+        return 1_000
+    return 1
+
+
+def _identify_breakdown_table(t: pd.DataFrame):
+    """
+    주석 표가 "기타유동금융자산 분해표"인지 판정 + 컬럼 매핑 반환.
+    지원 패턴:
+      A) 심플 헤더 4컬럼: [구분(유동/비유동), 구분(항목명), 당기말, 전기말]
+         - col0에 "유동" 및 "비유동" 모두 등장
+         - val_col_idx = 2 (당기말)
+         - liquidity는 col0에서, name은 col1에서
+      B) 멀티헤더 5컬럼: [구분, (당기말,유동), (당기말,비유동), (전기말,유동), (전기말,비유동)]
+         - val_col_curr_idx, val_col_non_idx = 1, 2
+         - liquidity는 컴럼 헤더에서, name은 col0에서
+    반환: dict {pattern, name_col_idx, liq_col_idx_or_value, val_curr_idx, val_non_idx}
+         또는 None.
+    """
+    if t is None or t.shape[0] < 1 or t.shape[1] < 2:
+        return None
+
+    # 패턴 B: 멀티헤더 + "당기말" + "유동/비유동"
+    if any(isinstance(c, tuple) for c in t.columns):
+        curr_curr = None  # 당기말 유동
+        curr_non = None   # 당기말 비유동
+        for i, c in enumerate(t.columns):
+            if not isinstance(c, tuple):
+                continue
+            joined = "".join(str(x) for x in c).replace(" ", "")
+            if "당기말" in joined and "비유동" in joined and curr_non is None:
+                curr_non = i
+            elif "당기말" in joined and "유동" in joined and curr_curr is None:
+                curr_curr = i
+        if curr_curr is not None or curr_non is not None:
+            return {
+                "pattern": "B",
+                "name_col": 0,
+                "val_curr_idx": curr_curr,
+                "val_non_idx": curr_non,
+            }
+
+    # 패턴 A: col0에 유동/비유동 모두 등장, 컬럼 4개 이상
+    try:
+        col0 = t.iloc[:, 0].fillna("").astype(str).tolist()
+    except Exception:
+        return None
+    col0_blob = " ".join(col0)
+    if ("유동" in col0_blob) and ("비유동" in col0_blob) and t.shape[1] >= 3:
+        # val_col은 세번째 컬럼 (당기말). 멀티헤더 아닄 단순헤더.
+        # 안전: 컬럼 이름에 "당기" 포함된 컬럼 이동
+        val_idx = 2  # default
+        for i, c in enumerate(t.columns):
+            cn = str(c).replace(" ", "")
+            if "당기" in cn and i >= 2:
+                val_idx = i
+                break
+        return {
+            "pattern": "A",
+            "name_col": 1,
+            "liq_col": 0,
+            "val_curr_idx": val_idx,  # 당기말 (유동이면 유동값, 비유동이면 비유동값)
+            "val_non_idx": None,
+        }
+    return None
+
+
+def parse_other_fa_breakdown(sub_docs: pd.DataFrame, debug: bool = False) -> Dict:
+    """
+    감사보고서 주석 페이지의 모든 표에서 "기타유동금융자산" 분해표를 수집·분류.
+    단위는 표별 감지(통상 천원). 반환값은 원 단위.
+
+    반환:
+      {
+        "cash_like":     {항목명: 원단위값(int)},  # 유동 항목만 집계 (Cash 합산용)
+        "non_cash_like": {항목명: 원단위값(int)},  # 참고용 (표시만 함)
+        "details":       [행별 메타...],
+        "source_tables": [표인덱스...],
+      }
+    """
+    out = {"cash_like": {}, "non_cash_like": {}, "details": [], "source_tables": []}
+    if sub_docs is None or sub_docs.empty:
+        return out
+    norm = sub_docs["title"].astype(str).str.replace(" ", "").str.replace("　", "")
+    notes = sub_docs[norm == "주석"]
+    if notes.empty:
+        return out
+
+    try:
+        tables = pd.read_html(notes.iloc[0]["url"])
+    except Exception:
+        return out
+
+    for i, t in enumerate(tables):
+        info = _identify_breakdown_table(t)
+        if not info:
+            continue
+        # 부채 표 제외
+        try:
+            first_col_vals = t.iloc[:, info.get("name_col", 0)].fillna("").astype(str).tolist()
+        except Exception:
+            continue
+        liability = False
+        for v in first_col_vals:
+            vn = _norm_cell(v)
+            if any(p in vn for p in _LIABILITY_INDICATORS):
+                liability = True
+                break
+        if liability:
+            continue
+
+        unit = _detect_table_unit_local(tables, i)
+
+        # 행 순회
+        table_matched = False
+        for ridx in range(len(t)):
+            try:
+                name_cell = t.iloc[ridx, info["name_col"]]
+            except Exception:
+                continue
+            if pd.isna(name_cell):
+                continue
+            name = str(name_cell).strip()
+            if not name:
+                continue
+            nn = _norm_cell(name)
+            if nn in ("합계", "총계", "소계", "구분"):
+                continue
+            if "합" in nn and "계" in nn:
+                continue
+
+            cat = _classify_other_fa_item(name)
+            if cat == "unknown":
+                continue
+
+            # 유동성 판단
+            liquidity = None
+            if info["pattern"] == "A":
+                try:
+                    liq_cell = t.iloc[ridx, info["liq_col"]]
+                    lq = _norm_cell(liq_cell) if not pd.isna(liq_cell) else ""
+                except Exception:
+                    lq = ""
+                if "비유동" in lq:
+                    liquidity = "non_current"
+                elif "유동" in lq:
+                    liquidity = "current"
+                # 값: val_curr_idx 에서 동일
+                v_curr_raw = t.iloc[ridx, info["val_curr_idx"]] if info["val_curr_idx"] is not None else None
+                v_curr = to_number(v_curr_raw) if v_curr_raw is not None else None
+                v_non = None
+            else:  # 패턴 B
+                v_curr_raw = t.iloc[ridx, info["val_curr_idx"]] if info["val_curr_idx"] is not None else None
+                v_non_raw = t.iloc[ridx, info["val_non_idx"]] if info["val_non_idx"] is not None else None
+                v_curr = to_number(v_curr_raw) if v_curr_raw is not None else None
+                v_non = to_number(v_non_raw) if v_non_raw is not None else None
+                if v_curr and not v_non:
+                    liquidity = "current"
+                elif v_non and not v_curr:
+                    liquidity = "non_current"
+                else:
+                    liquidity = "both_or_none"
+
+            # 원 단위 값 계산 (패턴 A는 v_curr가 해당 유동성 값)
+            if info["pattern"] == "A":
+                total = (v_curr or 0) * unit
+            else:
+                total = ((v_curr or 0) + (v_non or 0)) * unit
+
+            # Cash 누적: 유동 cash_like만 Cash 합계에 포함.
+            # (비유동 정기예금 같은 건 드물지만 존재 → 별도 처리 안 함.
+            #  보수적으로 유동만 Cash, 비유동 cash_like는 non_cash_like로 차입)
+            if cat == "cash_like":
+                if info["pattern"] == "A":
+                    if liquidity == "current":
+                        out["cash_like"][name] = out["cash_like"].get(name, 0) + total
+                    else:
+                        # 비유동 cash_like는 보수적으로 참고만
+                        out["non_cash_like"][name + " (비유동)"] = out["non_cash_like"].get(name + " (비유동)", 0) + total
+                else:
+                    # 패턴 B: 유동값·비유동값 분리
+                    cur_total = (v_curr or 0) * unit
+                    non_total = (v_non or 0) * unit
+                    if cur_total > 0:
+                        out["cash_like"][name] = out["cash_like"].get(name, 0) + cur_total
+                    if non_total > 0:
+                        out["non_cash_like"][name + " (비유동)"] = out["non_cash_like"].get(name + " (비유동)", 0) + non_total
+            else:  # non_cash
+                out["non_cash_like"][name] = out["non_cash_like"].get(name, 0) + total
+
+            out["details"].append({
+                "table_idx": i,
+                "pattern": info["pattern"],
+                "name": name,
+                "category": cat,
+                "liquidity": liquidity,
+                "value_won": total,
+                "v_curr": (v_curr or 0) * unit,
+                "v_non": (v_non or 0) * unit if v_non is not None else 0,
+                "unit": unit,
+            })
+            table_matched = True
+        if table_matched and i not in out["source_tables"]:
+            out["source_tables"].append(i)
+
+    return out
+
+
 def extract_external_audit_data(_dart, corp_code: str, year: int,
                                 prefer_consolidated: bool = True) -> Dict:
     """
@@ -831,6 +1096,15 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
                     }
                     da_fallback_used = True
 
+    # ============================================================
+    # v14: "기타유동금융자산" 주석 분해 (cash-like / non-cash 자동 분류)
+    # ============================================================
+    other_fa_breakdown = {}
+    try:
+        other_fa_breakdown = parse_other_fa_breakdown(sub_docs)
+    except Exception as e:
+        other_fa_breakdown = {"cash_like": {}, "non_cash_like": {}, "details": [], "error": str(e)}
+
     return {
         "data": result_data,
         "unit_scale": unit_scale,
@@ -842,6 +1116,7 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         "parsing_mode": "통합페이지" if used_combined else "항목분리",
         "da_fallback_used": da_fallback_used,
         "da_fallback_info": da_fallback_info,
+        "other_fa_breakdown": other_fa_breakdown,
     }
 
 
@@ -899,6 +1174,7 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                     "report_nm": result.get("report_nm"),
                     "debug": result.get("debug"),
                     "statement_urls": result.get("statement_urls"),
+                    "other_fa_breakdown": result.get("other_fa_breakdown", {}),
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
@@ -948,6 +1224,7 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                     "report_nm": result.get("report_nm"),
                     "debug": result.get("debug"),
                     "statement_urls": result.get("statement_urls"),
+                    "other_fa_breakdown": result.get("other_fa_breakdown", {}),
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
@@ -1017,8 +1294,8 @@ _CASH_COMPOSITION_ITEMS = [
     ("매도가능금융자산/매도가능증권(유동)", "_매도가능금융자산_유동"),
     ("기타포괄손익-공정가치측정금융자산(유동)", "_기타포괄손익공정가치_유동"),
     ("장기금융상품/장기성예금", "_장기금융상품"),
-    ("기타유동금융자산", "_기타유동금융자산"),
-    ("기타비유동금융자산", "_기타비유동금융자산"),
+    # v14: "기타유동금융자산" 통째 논입을 제거. 주석에서 분해한 cash-like 항목만
+    # 동적으로 추가됨 (parse_other_fa_breakdown → yearly_meta[year]["other_fa_breakdown"]).
 ]
 
 _DEBT_COMPOSITION_ITEMS = [
@@ -1035,6 +1312,23 @@ _DEBT_COMPOSITION_ITEMS = [
 
 _CASH_KEYS = [k for _, k in _CASH_COMPOSITION_ITEMS]
 _DEBT_KEYS = [k for _, k in _DEBT_COMPOSITION_ITEMS]
+
+
+# --------------------------------------------------------------------
+# v14: 주석 분해 cash-like 합산 헬퍼
+# yearly_meta[y]["other_fa_breakdown"]["cash_like"]의 원단위값을 억원으로 환산.
+# 주석 분해 단계에서 이미 원 단위로 환산되었으므로 unit_scale 재적용 안 함.
+# --------------------------------------------------------------------
+def _other_fa_cash_like_eokwon(yearly_meta: Dict, year: int) -> Optional[float]:
+    """주석 분해 cash_like 합을 억원으로 반환. 분해 결과 없으면 None."""
+    bd = yearly_meta.get(year, {}).get("other_fa_breakdown")
+    if not bd or not isinstance(bd, dict):
+        return None
+    cl = bd.get("cash_like", {}) or {}
+    if not cl:
+        return 0.0
+    total_won = sum(v for v in cl.values() if isinstance(v, (int, float)))
+    return round(total_won / 1e8)
 
 
 def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
@@ -1118,21 +1412,21 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
     # 자산총계 / 현금성(valuation 정의) / 부채 / 총차입금(valuation 정의) / 자본
     rows.append(["자산총계"] + [format_eokwon(get_val_eokwon(y, "자산총계")) for y in years])
 
-    # 현금성자산 = Cash 구성 항목 합산 (valuation 정의)
-    # 전부 None 이면 BS 추출 자체가 실패한 것. 그때만 N/A.
-    # 하나라도 값이 있으면 합산 결과 표시 (나머지는 공시에 해당 없는 것으로 간주).
+    # 현금성자산 = 정적 _CASH_KEYS 합 + 주석 분해 cash-like 합 (v14 valuation 정의)
+    # _CASH_KEYS: 현금및현금성자산, 단기금융상품, 장기금융상품 등 명시적 계정
+    # 주석 분해: "기타유동금융자산" 안의 정기예금/단기금융상품/MMF 등
     cash_row = ["  현금성자산"]
     for y in years:
         d = yearly_data.get(y, {})
-        cv = safe_sum_eokwon(y, _CASH_KEYS)
-        if cv is None:
-            # 자산총계가 추출된 경우에만 0 표시
-            if d.get("자산총계") is not None:
-                cash_row.append(format_eokwon(0.0))
-            else:
-                cash_row.append("N/A")
+        cv_static = safe_sum_eokwon(y, _CASH_KEYS)
+        cv_breakdown = _other_fa_cash_like_eokwon(yearly_meta, y)
+        total = None
+        if cv_static is not None or cv_breakdown is not None:
+            total = (cv_static or 0.0) + (cv_breakdown or 0.0)
+        if total is None:
+            cash_row.append(format_eokwon(0.0) if d.get("자산총계") is not None else "N/A")
         else:
-            cash_row.append(format_eokwon(cv))
+            cash_row.append(format_eokwon(total))
     rows.append(cash_row)
 
     rows.append(["부채총계"] + [format_eokwon(get_val_eokwon(y, "부채총계")) for y in years])
@@ -1206,11 +1500,104 @@ def _build_composition_table(
 
 
 def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
-    """현금성자산 구성표 (valuation Net Debt 차감항 후보)."""
-    return _build_composition_table(
-        _CASH_COMPOSITION_ITEMS, yearly_data, yearly_meta, years,
-        total_label="　합계 (현금성자산 후보 총합)",
-    )
+    """현금성자산 구성표 (valuation Net Debt 차감항 후보).
+
+    v14 변경:
+    - 정적 BS 계정(_CASH_COMPOSITION_ITEMS) 행 + 주석 분해 cash-like 행("기타금융자산 분해")
+      을 함께 노출. 합계는 두 부분의 합.
+    - 별도 섹션에 non_cash_like(보증금/대여금 등) 행을 "[비포함 — 참고]"로 표기.
+      합계에는 포함되지 않음.
+    """
+    sorted_years = sorted(years)
+
+    def get_eok(year, key):
+        v = yearly_data.get(year, {}).get(key)
+        scale = yearly_meta.get(year, {}).get("unit_scale", 1)
+        return to_eokwon(v, scale)
+
+    def won_to_eok(v):
+        if v is None or not isinstance(v, (int, float)):
+            return None
+        return round(v / 1e8)
+
+    rows = []
+    totals = {y: 0.0 for y in sorted_years}
+    any_total = {y: False for y in sorted_years}
+
+    # ----- (1) 정적 BS 계정 -----
+    for label, key in _CASH_COMPOSITION_ITEMS:
+        vals = {y: get_eok(y, key) for y in sorted_years}
+        if all(v is None for v in vals.values()):
+            continue
+        rows.append([label] + [format_eokwon(vals[y]) for y in sorted_years])
+        for y in sorted_years:
+            if vals[y] is not None:
+                totals[y] += vals[y]
+                any_total[y] = True
+
+    # ----- (2) 주석 분해 cash-like (기타유동금융자산 풀어쓴 항목) -----
+    # 연도별 cash_like dict 수집 → 항목명(name) 합집합으로 행 생성.
+    cash_like_by_year: Dict[int, Dict[str, float]] = {}
+    for y in sorted_years:
+        bd = yearly_meta.get(y, {}).get("other_fa_breakdown") or {}
+        cl = bd.get("cash_like", {}) if isinstance(bd, dict) else {}
+        cash_like_by_year[y] = cl if isinstance(cl, dict) else {}
+
+    all_cash_names: List[str] = []
+    seen = set()
+    for y in sorted_years:
+        for name in cash_like_by_year[y].keys():
+            if name not in seen:
+                seen.add(name)
+                all_cash_names.append(name)
+
+    if all_cash_names:
+        # 섹션 헤더 (값 칸은 비움)
+        rows.append(["[기타금융자산 주석 분해 — 포함]"] + ["" for _ in sorted_years])
+        for name in all_cash_names:
+            row = [f"　{name}"]
+            for y in sorted_years:
+                won_v = cash_like_by_year[y].get(name)
+                eok_v = won_to_eok(won_v)
+                row.append(format_eokwon(eok_v))
+                if eok_v is not None:
+                    totals[y] += eok_v
+                    any_total[y] = True
+            rows.append(row)
+
+    # ----- 합계 (정적 + cash-like 분해) -----
+    total_row = ["　합계 (현금성자산 후보 총합)"]
+    for y in sorted_years:
+        total_row.append(format_eokwon(totals[y]) if any_total[y] else "N/A")
+    rows.append(total_row)
+
+    # ----- (3) non_cash_like (참고용, 합계 비포함) -----
+    non_cash_by_year: Dict[int, Dict[str, float]] = {}
+    for y in sorted_years:
+        bd = yearly_meta.get(y, {}).get("other_fa_breakdown") or {}
+        ncl = bd.get("non_cash_like", {}) if isinstance(bd, dict) else {}
+        non_cash_by_year[y] = ncl if isinstance(ncl, dict) else {}
+
+    all_non_cash_names: List[str] = []
+    seen2 = set()
+    for y in sorted_years:
+        for name in non_cash_by_year[y].keys():
+            if name not in seen2:
+                seen2.add(name)
+                all_non_cash_names.append(name)
+
+    if all_non_cash_names:
+        rows.append(["[기타금융자산 주석 분해 — 비포함 · 참고]"] + ["" for _ in sorted_years])
+        for name in all_non_cash_names:
+            row = [f"　{name}"]
+            for y in sorted_years:
+                won_v = non_cash_by_year[y].get(name)
+                eok_v = won_to_eok(won_v)
+                row.append(format_eokwon(eok_v))
+            rows.append(row)
+
+    columns = ["(단위: 억원)"] + [str(y) for y in sorted_years]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int]) -> pd.DataFrame:
