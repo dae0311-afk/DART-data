@@ -1,21 +1,17 @@
 """
-DART 재무정보 추출 에이전트 v4
+DART 재무정보 추출 에이전트 v5
 - PE 5개년 재무요약 템플릿
 - 상장사: finstate_all (XBRL) 우선
-- 외감 비상장사: 감사보고서 첨부 엑셀 자동 다운로드 + 파싱 fallback
+- 외감 비상장사: 감사보고서 sub_docs HTML viewer 직접 파싱 (확정 동작)
 - 추후 PDF 검증 단계 추가 예정
 """
 
 import io
 import re
-import zipfile
-import tempfile
-import os
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
 import pandas as pd
-import requests
 import streamlit as st
 import OpenDartReader
 
@@ -29,14 +25,14 @@ st.set_page_config(
 )
 
 st.title("📊 DART 재무정보 추출 에이전트")
-st.caption("v4 — 외감 비상장사 감사보고서 첨부 엑셀 자동 파싱 지원")
+st.caption("v5 — 외감 비상장사 감사보고서 HTML 직접 파싱 (sub_docs viewer)")
 
 # ====================================================================
 # 1) 상수
 # ====================================================================
 REPRT_CODE_ANNUAL = "11011"  # 사업보고서
 
-# 손익/재무상태 계정 키워드 (XBRL API + 엑셀 파싱 공용)
+# 손익/재무상태/CF 계정 키워드
 ACCOUNT_KEYWORDS = {
     "매출액": ["매출액", "수익(매출액)", "영업수익", "매출", "수익"],
     "영업이익": ["영업이익", "영업이익(손실)", "영업손실"],
@@ -45,18 +41,18 @@ ACCOUNT_KEYWORDS = {
     "현금성자산": ["현금및현금성자산", "현금 및 현금성자산"],
     "부채총계": ["부채총계", "부채 총계"],
     "자본총계": ["자본총계", "자본 총계"],
-    # 차입금 합산 항목
+    # 차입금 합산
     "_단기차입금": ["단기차입금"],
     "_유동성장기부채": ["유동성장기부채", "유동성장기차입금", "유동성사채"],
     "_장기차입금": ["장기차입금"],
     "_사채": ["사채"],
-    # EBITDA 가산 (CF 또는 주석)
+    # EBITDA 가산
     "_유형자산감가상각비": ["감가상각비", "유형자산감가상각비"],
     "_무형자산상각비": ["무형자산상각비", "무형자산상각"],
     "_사용권자산상각비": ["사용권자산상각비"],
 }
 
-# 재무제표 구분 매핑 (XBRL API용)
+# XBRL용 재무제표 구분
 SJ_DIV_MAP = {
     "매출액": ["IS", "CIS"],
     "영업이익": ["IS", "CIS"],
@@ -72,6 +68,24 @@ SJ_DIV_MAP = {
     "_유형자산감가상각비": ["CF"],
     "_무형자산상각비": ["CF"],
     "_사용권자산상각비": ["CF"],
+}
+
+# HTML 파싱용 재무제표 매핑 (어느 표에서 찾을지)
+STATEMENT_OF = {
+    "매출액": "IS",
+    "영업이익": "IS",
+    "당기순이익": "IS",
+    "자산총계": "BS",
+    "현금성자산": "BS",
+    "부채총계": "BS",
+    "자본총계": "BS",
+    "_단기차입금": "BS",
+    "_유동성장기부채": "BS",
+    "_장기차입금": "BS",
+    "_사채": "BS",
+    "_유형자산감가상각비": "CF",
+    "_무형자산상각비": "CF",
+    "_사용권자산상각비": "CF",
 }
 
 # ====================================================================
@@ -107,21 +121,17 @@ def to_number(x) -> Optional[int]:
     if x is None or pd.isna(x):
         return None
     s = str(x).strip().replace(",", "").replace(" ", "").replace("\xa0", "")
-    if s in ("", "-", "nan", "None", "0.0"):
-        if s == "0.0":
-            return 0
+    if s in ("", "-", "nan", "None"):
         return None
     try:
         if s.startswith("(") and s.endswith(")"):
             s = "-" + s[1:-1]
-        # 소수점 있을 경우 처리
         return int(float(s))
     except (ValueError, TypeError):
         return None
 
 
 def to_eokwon(v: Optional[int], unit_scale: int = 1) -> Optional[float]:
-    """unit_scale: 1=원, 1000=천원, 1000000=백만원"""
     if v is None:
         return None
     return round(v * unit_scale / 100_000_000)
@@ -142,34 +152,19 @@ def format_pct(v: Optional[float]) -> str:
 
 
 def normalize_account_name(name: str) -> str:
-    """계정명 정규화: 공백/특수문자 제거, 소문자화."""
+    """계정명 정규화: 로마숫자/번호/공백/주석표시 제거."""
     if name is None:
         return ""
     s = str(name).strip()
-    # 로마숫자/번호 제거 (예: "I. 매출액", "1. 매출액", "Ⅰ. 매출액")
     s = re.sub(r"^[\dIVXⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\.\s*", "", s)
     s = re.sub(r"^[\(\[]\s*\d+\s*[\)\]]\s*", "", s)
+    s = re.sub(r"\(주석.*?\)", "", s)
     s = s.replace(" ", "").replace("　", "")
     return s
 
 
-def match_account(name: str, keywords: list) -> bool:
-    """정규화된 계정명이 키워드 중 하나와 매칭되는지."""
-    norm_name = normalize_account_name(name)
-    for kw in keywords:
-        norm_kw = normalize_account_name(kw)
-        if norm_name == norm_kw:
-            return True
-    # 부분 매칭
-    for kw in keywords:
-        norm_kw = normalize_account_name(kw)
-        if norm_kw and norm_kw in norm_name:
-            return True
-    return False
-
-
 # ====================================================================
-# 4) XBRL 기반 추출 (상장사 + XBRL 제출한 외감사)
+# 4) XBRL 기반 추출 (상장사)
 # ====================================================================
 def find_in_xbrl(df: pd.DataFrame, keywords: list, sj_filter: list) -> Optional[pd.Series]:
     if df is None or df.empty:
@@ -180,13 +175,11 @@ def find_in_xbrl(df: pd.DataFrame, keywords: list, sj_filter: list) -> Optional[
     if work.empty:
         return None
 
-    # 정확 일치
     for kw in keywords:
         m = work[work["account_nm"] == kw]
         if not m.empty:
             return m.iloc[0]
 
-    # 부분 일치 (가장 짧은 계정명 우선)
     pattern = "|".join([re.escape(k) for k in keywords])
     partial = work[work["account_nm"].astype(str).str.contains(pattern, na=False, regex=True)]
     if not partial.empty:
@@ -220,245 +213,265 @@ def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optio
 
 
 # ====================================================================
-# 5) 외감 감사보고서 엑셀 fallback 경로
+# 5) 외감 감사보고서 HTML 파싱 (sub_docs viewer)
 # ====================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
-def find_audit_report(_dart, corp_code: str, year: int) -> Optional[Dict]:
+def find_external_audit_reports(_dart, corp_code: str, year: int) -> List[Dict]:
     """
-    해당 연도의 감사보고서/연결감사보고서를 찾음.
-    외감 비상장사는 사업보고서가 없으므로 외부감사관련 공시(kind=A,F)에서 찾음.
+    외감사: kind='F'에서 해당 회계연도 감사보고서/연결감사보고서 검색.
+    감사보고서는 다음 해 1~6월에 주로 제출됨.
+    반환: 우선순위 정렬된 리스트 (연결감사보고서 → 감사보고서)
     """
     try:
-        # 다음 해 1월~6월 사이에 제출되는 게 일반적
-        start = f"{year}-01-01"
-        end = f"{year+1}-12-31"
+        # 회계연도 다음 해 전체 + 그 다음 해 상반기까지 (수정 보고 대비)
+        start = f"{year+1}-01-01"
+        end = f"{year+2}-06-30"
 
-        # 1차: 정기공시 (A) - 사업보고서/감사보고서 포함
-        reports = _dart.list(corp_code, start=start, end=end, kind="A")
-
-        # 2차: 외부감사관련 (F) 별도 시도
-        try:
-            audit_reports = _dart.list(corp_code, start=start, end=end, kind="F")
-            if audit_reports is not None and not audit_reports.empty:
-                if reports is None or reports.empty:
-                    reports = audit_reports
-                else:
-                    reports = pd.concat([reports, audit_reports], ignore_index=True)
-        except Exception:
-            pass
-
+        reports = _dart.list(corp_code, start=start, end=end, kind="F")
         if reports is None or reports.empty:
-            return None
+            return []
 
-        # 감사보고서/연결감사보고서/사업보고서 우선순위로 정렬
-        def priority(report_nm):
+        # 연도 매칭: report_nm에 "(YYYY.MM)" 패턴이 있고 YYYY가 해당 연도여야 함
+        def matches_year(report_nm):
             nm = str(report_nm)
-            if "사업보고서" in nm:
-                return 0
-            if "연결감사보고서" in nm:
-                return 1
-            if "감사보고서" in nm:
-                return 2
-            return 99
+            m = re.search(r"\((\d{4})\.\d{2}\)", nm)
+            if m:
+                return int(m.group(1)) == year
+            return False
 
         reports = reports.copy()
-        reports["_priority"] = reports["report_nm"].apply(priority)
-        reports = reports[reports["_priority"] < 99]
+        reports["_matches"] = reports["report_nm"].apply(matches_year)
+        reports = reports[reports["_matches"]]
         if reports.empty:
-            return None
-        reports = reports.sort_values(["_priority", "rcept_dt"], ascending=[True, False])
-        top = reports.iloc[0]
-        return {
-            "rcept_no": top["rcept_no"],
-            "report_nm": top["report_nm"],
-            "rcept_dt": top.get("rcept_dt"),
-        }
+            return []
+
+        def priority(report_nm):
+            nm = str(report_nm)
+            if "연결감사보고서" in nm:
+                return 0
+            if "감사보고서" in nm:
+                return 1
+            return 99
+
+        reports["_prio"] = reports["report_nm"].apply(priority)
+        reports = reports[reports["_prio"] < 99]
+        reports = reports.sort_values(["_prio", "rcept_dt"], ascending=[True, False])
+
+        return [
+            {
+                "rcept_no": r["rcept_no"],
+                "report_nm": r["report_nm"],
+                "rcept_dt": r.get("rcept_dt"),
+                "is_consolidated": "연결" in str(r["report_nm"]),
+            }
+            for _, r in reports.iterrows()
+        ]
     except Exception:
-        return None
+        return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_attach_excel_url(_dart, rcept_no: str, prefer_consolidated: bool = True) -> Optional[Tuple[str, str]]:
-    """
-    감사보고서의 첨부파일 중 재무제표 엑셀 URL을 반환.
-    prefer_consolidated: True면 연결 우선
-    """
+def get_sub_docs(_dart, rcept_no: str) -> Optional[pd.DataFrame]:
     try:
-        files = _dart.attach_files(rcept_no)
-        if not files:
+        df = _dart.sub_docs(rcept_no)
+        if df is None or df.empty:
             return None
-        # files는 dict: {제목: URL}
-        if isinstance(files, dict):
-            items = list(files.items())
-        else:
-            return None
-
-        # 엑셀 파일만 필터링
-        excel_items = [(t, u) for t, u in items
-                       if any(t.lower().endswith(ext) for ext in [".xls", ".xlsx", ".xlsm"])
-                       or "excel" in u.lower() or "xls" in u.lower()]
-
-        if not excel_items:
-            # URL 패턴으로 엑셀 추정 (DART는 excel.do URL을 씀)
-            excel_items = [(t, u) for t, u in items if "excel" in u.lower()]
-
-        if not excel_items:
-            return None
-
-        # 연결/별도 선택
-        def score(title):
-            t = title
-            s = 0
-            if prefer_consolidated:
-                if "연결" in t: s -= 10
-                if "별도" in t: s += 5
-            else:
-                if "별도" in t: s -= 10
-                if "연결" in t: s += 5
-            if "재무제표" in t: s -= 5
-            if "감사보고서" in t: s -= 3
-            return s
-
-        excel_items.sort(key=lambda x: score(x[0]))
-        return excel_items[0]
+        return df
     except Exception:
         return None
 
 
-def download_file(url: str, api_key: str) -> Optional[bytes]:
-    """DART 첨부파일 다운로드. URL에 따라 처리 방식 다름."""
-    try:
-        # API 키 필요한 URL은 자동 처리, 일반 URL은 requests
-        resp = requests.get(url, timeout=30, allow_redirects=True)
-        if resp.status_code == 200:
-            return resp.content
+def find_statement_url(sub_docs: pd.DataFrame, keyword: str) -> Optional[str]:
+    """sub_docs에서 'BS/IS/CF' 키워드를 포함한 첫 viewer URL."""
+    if sub_docs is None or sub_docs.empty:
         return None
+    norm = sub_docs["title"].astype(str).str.replace(" ", "").str.replace("　", "")
+    matched = sub_docs[norm.str.contains(keyword, na=False)]
+    if matched.empty:
+        return None
+    return matched.iloc[0]["url"]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def parse_html_statement(url: str) -> Optional[pd.DataFrame]:
+    """DART viewer URL을 pd.read_html로 파싱. 표 1(본문)을 반환."""
+    try:
+        tables = pd.read_html(url)
+        if len(tables) < 2:
+            return None
+        return tables[1]
     except Exception:
         return None
 
 
-def detect_unit_scale(excel_text: str) -> int:
-    """엑셀 내용에서 단위를 감지. 1=원, 1000=천원, 1000000=백만원"""
-    text = excel_text[:5000]  # 상단만 검사
-    if re.search(r"단위\s*[:：]\s*백만\s*원", text) or "백만원" in text[:2000]:
-        return 1_000_000
-    if re.search(r"단위\s*[:：]\s*천\s*원", text) or "천원" in text[:2000]:
-        return 1_000
-    return 1
+def detect_unit_from_header(url: str) -> int:
+    """표 0의 헤더에서 '단위' 텍스트를 찾아 스케일 결정. 1=원, 1000=천원, 1000000=백만원."""
+    try:
+        tables = pd.read_html(url)
+        if not tables:
+            return 1
+        header_text = " ".join(tables[0].fillna("").astype(str).values.flatten().tolist())
+        if re.search(r"단위\s*[:：]?\s*백만\s*원", header_text):
+            return 1_000_000
+        if re.search(r"단위\s*[:：]?\s*천\s*원", header_text):
+            return 1_000
+        return 1
+    except Exception:
+        return 1
 
 
-def parse_excel_for_accounts(excel_bytes: bytes) -> Tuple[Dict[str, Optional[int]], int, List[Dict]]:
+def extract_year_columns(df: pd.DataFrame) -> Dict[int, List[str]]:
     """
-    감사보고서 첨부 엑셀에서 계정값을 추출.
-    반환: (계정 dict, 단위 scale, 디버그용 매칭 정보 리스트)
+    당기/전기/전전기 컬럼 매핑.
+    DART HTML 표는 컬럼명에 '(당)/(전)/(전전)' 표기를 사용하며,
+    같은 컬럼이 2개씩 나타남 (원본 + .1) — 둘 다 후보로 둔다.
     """
-    results = {key: None for key in ACCOUNT_KEYWORDS.keys()}
-    debug_info = []
+    cols = [str(c) for c in df.columns]
+    result = {0: [], 1: [], 2: []}
+    for c in cols:
+        cn = c.replace(" ", "")
+        if "(전전)" in cn or "전전기" in cn:
+            result[2].append(c)
+        elif "(당)" in cn or "당기" in cn or "(당기)" in cn:
+            result[0].append(c)
+        elif "(전)" in cn or "전기" in cn or "(전기)" in cn:
+            result[1].append(c)
+    return result
+
+
+def extract_value_from_row(df: pd.DataFrame, row_idx: int, target_cols: List[str]) -> Optional[int]:
+    """한 행의 target_cols 중 첫 유효 숫자를 반환 (원본 → .1 순)."""
+    for col in target_cols:
+        v = to_number(df.iloc[row_idx][col])
+        if v is not None:
+            return v
+    return None
+
+
+def find_account_in_html(df: pd.DataFrame, keywords: list, year_offset: int = 0) -> Optional[int]:
+    """첫 컬럼(과목)에서 매칭 행 검색 → 해당 연도 값 반환."""
+    if df is None or df.empty:
+        return None
+    year_cols = extract_year_columns(df)
+    target_cols = year_cols.get(year_offset, [])
+    if not target_cols:
+        return None
+    first_col = df.columns[0]
+
+    # 1차: 정확 매칭
+    for idx in range(len(df)):
+        cell = df.iloc[idx][first_col]
+        if pd.isna(cell):
+            continue
+        norm = normalize_account_name(str(cell))
+        for kw in keywords:
+            if norm == normalize_account_name(kw):
+                v = extract_value_from_row(df, idx, target_cols)
+                if v is not None:
+                    return v
+
+    # 2차: 부분 매칭 (가장 짧은 계정명 우선)
+    candidates = []
+    for idx in range(len(df)):
+        cell = df.iloc[idx][first_col]
+        if pd.isna(cell):
+            continue
+        norm = normalize_account_name(str(cell))
+        for kw in keywords:
+            nkw = normalize_account_name(kw)
+            if nkw and nkw in norm:
+                candidates.append((len(norm), idx, str(cell)))
+                break
+    candidates.sort()
+    for _, idx, _ in candidates:
+        v = extract_value_from_row(df, idx, target_cols)
+        if v is not None:
+            return v
+    return None
+
+
+def extract_external_audit_data(_dart, corp_code: str, year: int,
+                                prefer_consolidated: bool = True) -> Dict:
+    """
+    외감 비상장사: 감사보고서 sub_docs HTML viewer에서 BS/IS/CF 직접 파싱.
+    반환: {'data': {...}, 'unit_scale': int, 'rcept_no': str, ...}
+    """
+    reports = find_external_audit_reports(_dart, corp_code, year)
+    if not reports:
+        return {"data": None, "error": f"{year}년 외부감사 감사보고서 미발견"}
+
+    # 연결/별도 우선순위에 따라 선택
+    if prefer_consolidated:
+        chosen = next((r for r in reports if r["is_consolidated"]), reports[0])
+    else:
+        chosen = next((r for r in reports if not r["is_consolidated"]), reports[0])
+
+    rcept_no = chosen["rcept_no"]
+    sub_docs = get_sub_docs(_dart, rcept_no)
+    if sub_docs is None:
+        return {"data": None, "error": f"sub_docs 조회 실패 (rcept_no={rcept_no})",
+                "rcept_no": rcept_no, "report_nm": chosen["report_nm"]}
+
+    # 각 statement URL
+    urls = {
+        "BS": find_statement_url(sub_docs, "재무상태표"),
+        "IS": find_statement_url(sub_docs, "손익계산서"),
+        "CF": find_statement_url(sub_docs, "현금흐름표"),
+    }
+    # 포괄손익계산서 fallback
+    if not urls["IS"]:
+        urls["IS"] = find_statement_url(sub_docs, "포괄손익계산서")
+
+    # 단위 감지 (BS 헤더 사용)
     unit_scale = 1
+    if urls["BS"]:
+        unit_scale = detect_unit_from_header(urls["BS"])
 
-    try:
-        # 다중 시트 모두 검사
-        xls = pd.ExcelFile(io.BytesIO(excel_bytes))
+    # 각 표 파싱
+    dfs = {k: parse_html_statement(u) if u else None for k, u in urls.items()}
 
-        all_text_sample = ""
-        for sheet_name in xls.sheet_names[:10]:  # 최대 10개 시트
-            try:
-                df = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=str)
-            except Exception:
-                continue
-            if df.empty:
-                continue
+    # 데이터 추출
+    result_data = {}
+    debug = []
+    for key, keywords in ACCOUNT_KEYWORDS.items():
+        stmt = STATEMENT_OF[key]
+        df = dfs.get(stmt)
+        val = find_account_in_html(df, keywords, year_offset=0)
+        result_data[key] = val
+        debug.append({
+            "항목": key,
+            "재무제표": stmt,
+            "값(원단위)": val,
+            "발견여부": "✓" if val is not None else "—",
+        })
 
-            # 단위 감지용 텍스트 누적
-            text_sample = " ".join(df.head(15).fillna("").astype(str).values.flatten().tolist())
-            all_text_sample += text_sample + " "
-
-            # 각 계정 찾기
-            for key, keywords in ACCOUNT_KEYWORDS.items():
-                if results[key] is not None:
-                    continue  # 이미 찾음
-
-                for row_idx in range(len(df)):
-                    row_vals = df.iloc[row_idx].fillna("").astype(str).tolist()
-                    for col_idx, cell in enumerate(row_vals):
-                        cell_str = str(cell).strip()
-                        if not cell_str:
-                            continue
-                        if match_account(cell_str, keywords):
-                            # 같은 행에서 오른쪽으로 가며 첫 숫자 찾기
-                            for c2 in range(col_idx + 1, min(col_idx + 10, len(row_vals))):
-                                v = to_number(row_vals[c2])
-                                if v is not None and v != 0:
-                                    results[key] = v
-                                    debug_info.append({
-                                        "항목": key,
-                                        "시트": sheet_name,
-                                        "원문계정명": cell_str,
-                                        "행/열": f"{row_idx+1}/{c2+1}",
-                                        "값": v,
-                                    })
-                                    break
-                            if results[key] is not None:
-                                break
-                    if results[key] is not None:
-                        break
-
-        # 단위 감지
-        unit_scale = detect_unit_scale(all_text_sample)
-    except Exception as e:
-        debug_info.append({"오류": str(e)})
-
-    return results, unit_scale, debug_info
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_audit_excel_data(_dart, _api_key: str, corp_code: str, year: int,
-                          prefer_consolidated: bool = True) -> Dict:
-    """
-    감사보고서 엑셀에서 단일 연도 데이터 추출.
-    반환: {'data': {...}, 'unit_scale': int, 'rcept_no': str, 'report_nm': str, 'debug': [...]}
-    """
-    report = find_audit_report(_dart, corp_code, year)
-    if not report:
-        return {"data": None, "error": f"{year}년 감사보고서/사업보고서를 찾지 못함"}
-
-    excel_info = fetch_attach_excel_url(_dart, report["rcept_no"], prefer_consolidated)
-    if not excel_info:
-        return {"data": None, "error": "첨부파일에 재무제표 엑셀 없음", "rcept_no": report["rcept_no"]}
-
-    title, url = excel_info
-    content = download_file(url, _api_key)
-    if not content:
-        return {"data": None, "error": f"엑셀 다운로드 실패: {url}", "rcept_no": report["rcept_no"]}
-
-    data, unit_scale, debug = parse_excel_for_accounts(content)
     return {
-        "data": data,
+        "data": result_data,
         "unit_scale": unit_scale,
-        "rcept_no": report["rcept_no"],
-        "report_nm": report["report_nm"],
-        "excel_title": title,
+        "rcept_no": rcept_no,
+        "report_nm": chosen["report_nm"],
+        "is_consolidated": chosen["is_consolidated"],
         "debug": debug,
+        "statement_urls": urls,
     }
 
 
 # ====================================================================
-# 6) 통합 데이터 수집 (XBRL 우선 → 실패 시 엑셀)
+# 6) 통합 수집 로직
 # ====================================================================
-def collect_multi_year_smart(_dart, _api_key: str, corp_code: str, corp_cls: str,
-                            years: List[int], fs_div: str,
-                            progress_callback=None) -> Tuple[Dict, Dict]:
+def collect_multi_year(_dart, corp_code: str, corp_cls: str,
+                       years: List[int], fs_div: str,
+                       progress_callback=None) -> Tuple[Dict, Dict]:
     """
-    상장사: XBRL을 3년 묶음으로 호출 (효율적)
-    외감(E): 매년 엑셀 다운로드 시도 (어쩔 수 없이 매년 호출)
+    상장사(Y/K/N): XBRL 3년 묶음 호출 → 누락 시 HTML 폴백 없음 (현재)
+    외감(E): 매년 sub_docs HTML 파싱
     """
     yearly_data = {y: {} for y in years}
-    yearly_meta = {y: {} for y in years}  # source(XBRL/EXCEL), unit_scale, rcept_no 등
-
+    yearly_meta = {y: {} for y in years}
     prefer_consolidated = (fs_div == "CFS")
 
-    # ============ 상장사 경로: XBRL 3년 묶음 ============
-    if corp_cls in ("Y", "K", "N"):  # 유가/코스닥/코넥스
+    # ============ 상장사 ============
+    if corp_cls in ("Y", "K", "N"):
         sorted_years = sorted(years, reverse=True)
         fetch_years = []
         covered = set()
@@ -471,7 +484,7 @@ def collect_multi_year_smart(_dart, _api_key: str, corp_code: str, corp_cls: str
         total = len(fetch_years)
         for idx, base_year in enumerate(fetch_years):
             if progress_callback:
-                progress_callback(idx, total, f"XBRL {base_year}년 (상장사 경로)")
+                progress_callback(idx, total, f"XBRL {base_year}년")
             df = fetch_xbrl_finstate(_dart, corp_code, base_year, fs_div)
             if df is None:
                 continue
@@ -481,41 +494,35 @@ def collect_multi_year_smart(_dart, _api_key: str, corp_code: str, corp_cls: str
                     yearly_data[ty] = extract_from_xbrl(df, year_offset=offset)
                     yearly_meta[ty] = {"source": "XBRL", "unit_scale": 1, "fs_div": fs_div}
 
-        # XBRL이 모든 연도를 못 채운 경우 (외감으로 강등됐을 가능성)
+        # 누락 연도는 외감 HTML 폴백 시도 (상장 → 외감으로 강등된 케이스)
         empty_years = [y for y in years
-                       if all(v is None for v in yearly_data[y].values())]
-        if empty_years and progress_callback:
-            progress_callback(total, total + len(empty_years),
-                              f"XBRL 누락 {len(empty_years)}년 → 엑셀 fallback")
-
-        # 누락 연도는 엑셀로 보강
+                       if not yearly_data[y] or all(v is None for v in yearly_data[y].values())]
         for i, y in enumerate(empty_years):
             if progress_callback:
-                progress_callback(total + i, total + len(empty_years), f"엑셀 fallback {y}년")
-            result = fetch_audit_excel_data(_dart, _api_key, corp_code, y, prefer_consolidated)
-            if result.get("data"):
+                progress_callback(i, len(empty_years), f"HTML 폴백 {y}년")
+            result = extract_external_audit_data(_dart, corp_code, y, prefer_consolidated)
+            if result.get("data") and any(v is not None for v in result["data"].values()):
                 yearly_data[y] = result["data"]
                 yearly_meta[y] = {
-                    "source": "EXCEL",
+                    "source": "HTML(외감 폴백)",
                     "unit_scale": result.get("unit_scale", 1),
                     "rcept_no": result.get("rcept_no"),
                     "report_nm": result.get("report_nm"),
-                    "excel_title": result.get("excel_title"),
                     "debug": result.get("debug"),
+                    "statement_urls": result.get("statement_urls"),
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
 
-    # ============ 외감 비상장사 경로: 매년 엑셀 ============
-    else:  # E (외감) 등
-        # 외감이라도 XBRL을 제출한 경우가 있으니 일단 시도
+    # ============ 외감 비상장사 ============
+    else:  # E 등
+        # 외감이라도 XBRL 제출했는지 한번 시도
         if progress_callback:
-            progress_callback(0, len(years) + 1, "외감: XBRL 1차 시도")
-        df_latest = fetch_xbrl_finstate(_dart, corp_code, max(years), fs_div)
-        xbrl_works = df_latest is not None and not df_latest.empty
+            progress_callback(0, len(years) + 1, "외감 XBRL 시도")
+        df_test = fetch_xbrl_finstate(_dart, corp_code, max(years), fs_div)
+        xbrl_works = df_test is not None and not df_test.empty
 
         if xbrl_works:
-            # XBRL 가능 - 3년 묶음으로 처리
             sorted_years = sorted(years, reverse=True)
             fetch_years = []
             covered = set()
@@ -526,7 +533,7 @@ def collect_multi_year_smart(_dart, _api_key: str, corp_code: str, corp_cls: str
                 covered.update([y, y - 1, y - 2])
             for idx, base_year in enumerate(fetch_years):
                 if progress_callback:
-                    progress_callback(idx, len(fetch_years), f"XBRL {base_year}년 (외감 XBRL 제출)")
+                    progress_callback(idx, len(fetch_years), f"XBRL {base_year}년 (외감 XBRL)")
                 df = fetch_xbrl_finstate(_dart, corp_code, base_year, fs_div)
                 if df is None:
                     continue
@@ -536,22 +543,22 @@ def collect_multi_year_smart(_dart, _api_key: str, corp_code: str, corp_cls: str
                         yearly_data[ty] = extract_from_xbrl(df, year_offset=offset)
                         yearly_meta[ty] = {"source": "XBRL", "unit_scale": 1, "fs_div": fs_div}
 
-        # 빈 연도는 엑셀로
+        # 빈 연도는 HTML 파싱
         empty_years = [y for y in years
-                       if all(v is None for v in yearly_data[y].values())]
+                       if not yearly_data[y] or all(v is None for v in yearly_data[y].values())]
         for i, y in enumerate(empty_years):
             if progress_callback:
-                progress_callback(i, len(empty_years), f"외감 엑셀 {y}년 (감사보고서 첨부)")
-            result = fetch_audit_excel_data(_dart, _api_key, corp_code, y, prefer_consolidated)
-            if result.get("data"):
+                progress_callback(i, len(empty_years), f"외감 HTML 파싱 {y}년")
+            result = extract_external_audit_data(_dart, corp_code, y, prefer_consolidated)
+            if result.get("data") and any(v is not None for v in result["data"].values()):
                 yearly_data[y] = result["data"]
                 yearly_meta[y] = {
-                    "source": "EXCEL",
+                    "source": "HTML(외감)",
                     "unit_scale": result.get("unit_scale", 1),
                     "rcept_no": result.get("rcept_no"),
                     "report_nm": result.get("report_nm"),
-                    "excel_title": result.get("excel_title"),
                     "debug": result.get("debug"),
+                    "statement_urls": result.get("statement_urls"),
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
@@ -651,7 +658,7 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
 # ====================================================================
 st.sidebar.header("🔍 검색 조건")
 
-company_input = st.sidebar.text_input("회사명 또는 코드", placeholder="예: 삼성전자 / 005930")
+company_input = st.sidebar.text_input("회사명 또는 코드", placeholder="예: 삼성전자 / 005930 / 은산해운항공")
 
 period_label = st.sidebar.selectbox(
     "조회 기간",
@@ -741,8 +748,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     if corp_cls == "E":
         st.warning(
-            "ℹ️ 외감 비상장기업입니다. 감사보고서 첨부 엑셀에서 데이터를 추출합니다 "
-            "(XBRL이 제출되었으면 그것을 우선 사용)."
+            "ℹ️ 외감 비상장기업입니다. 감사보고서의 HTML 본문(재무상태표/손익계산서/현금흐름표)을 "
+            "직접 파싱합니다. 단위는 헤더 표시를 기준으로 자동 감지하며, 별도/연결 우선순위는 "
+            "사이드바 설정을 따릅니다."
         )
 
     extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True)
@@ -759,12 +767,12 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         def update_progress(idx, total, label):
             if total > 0:
-                progress.progress(min(idx / total, 1.0))
+                progress.progress(min((idx + 1) / total, 1.0))
             if label:
                 status.text(f"📡 {label} ({idx+1}/{total})")
 
-        yearly_data, yearly_meta = collect_multi_year_smart(
-            dart, api_key, corp_code, corp_cls, years, fs_div_target,
+        yearly_data, yearly_meta = collect_multi_year(
+            dart, corp_code, corp_cls, years, fs_div_target,
             progress_callback=update_progress,
         )
         progress.empty()
@@ -792,23 +800,22 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         # 결측 안내
         empty_years = [y for y in years
-                       if all(v is None for v in yearly_data[y].values())]
+                       if not yearly_data[y] or all(v is None for v in yearly_data[y].values())]
         if empty_years:
             st.warning(
-                f"⚠️ 다음 연도는 데이터를 가져오지 못했습니다: {', '.join(map(str, empty_years))}\n\n"
+                f"⚠️ 데이터 미수집 연도: {', '.join(map(str, empty_years))}\n\n"
                 "원인은 위 데이터 소스 표의 '비고' 컬럼을 확인하세요."
             )
 
         st.caption(
             "⚠️ EBITDA = 영업이익 + (유형자산감가상각비 + 무형자산상각비 + 사용권자산상각비). "
-            "주석 표기 상각비는 누락 가능. 외감 엑셀 파싱은 단위를 자동 감지하나 100% 정확 보장 안됨."
+            "주석 표기 상각비는 누락 가능. 외감 HTML 파싱은 표 0의 '단위' 표시를 자동 감지."
         )
 
         # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             template_df.to_excel(writer, sheet_name="5개년_요약", index=False)
-            # 원본 데이터
             raw_rows = []
             for y in years:
                 d = yearly_data.get(y, {})
@@ -830,26 +837,33 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         )
 
         # 디버그
-        with st.expander("🔬 엑셀 파싱 디버그 (외감 fallback 추적)"):
+        with st.expander("🔬 외감 HTML 파싱 디버그"):
             for y in years:
                 meta = yearly_meta.get(y, {})
-                if meta.get("source") == "EXCEL":
-                    st.markdown(f"**{y}년 — {meta.get('excel_title', '?')}**")
+                if meta.get("source", "").startswith("HTML"):
+                    st.markdown(f"**{y}년 — {meta.get('report_nm', '?')}** (접수 `{meta.get('rcept_no')}`)")
                     debug = meta.get("debug", [])
                     if debug:
                         st.dataframe(pd.DataFrame(debug), use_container_width=True, hide_index=True)
+                    urls = meta.get("statement_urls", {})
+                    if urls:
+                        for stmt, u in urls.items():
+                            if u:
+                                st.caption(f"{stmt}: {u}")
 
         st.divider()
         st.info(
             "🔜 다음 단계: PDF 본문 검증\n"
-            "엑셀 fallback이 발동한 연도는 특히 PDF 원문 대조가 권장됩니다."
+            "외감 HTML 파싱 결과는 표 1(본문)만 사용하며, 주석 표기 항목(상각비 등)은 누락 가능."
         )
 
 st.sidebar.divider()
-with st.sidebar.expander("ℹ️ 외감 데이터 처리 방식"):
+with st.sidebar.expander("ℹ️ 데이터 처리 방식"):
     st.markdown(
-        "**상장사(Y/K/N)**: XBRL API 우선 → 누락 연도만 엑셀 fallback\n\n"
-        "**외감(E)**: XBRL 1차 시도 → 안되면 감사보고서 첨부 엑셀 자동 다운로드 + 파싱\n\n"
-        "**단위 자동 감지**: 엑셀 본문에서 '백만원'/'천원' 표기 탐색해 자동 스케일링\n\n"
-        "**연결/별도 선택**: 첨부 파일 제목에 '연결' 포함 여부로 우선순위"
+        "**상장사(Y/K/N)**: XBRL API 우선 (3년 묶음 호출)\n\n"
+        "**외감(E)**: 감사보고서 `sub_docs` HTML viewer 직접 파싱\n"
+        "- 재무상태표 / 손익계산서 / 현금흐름표 본문 표 1\n"
+        "- 단위는 헤더에서 자동 감지\n"
+        "- 컬럼: `제 N(당) 기` / `제 N(당) 기.1` 모두 후보\n\n"
+        "**연결/별도 선택**: 보고서명에 '연결' 포함 여부로 우선순위"
     )
