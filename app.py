@@ -650,11 +650,17 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
         "사용권자산상각비": ["사용권자산상각비", "사용권자산감가상각비"],
     }
 
-    # tables_with_units가 제공되면 그갟을 우선 사용
+    # tables_with_units가 제공되면 그것을 우선 사용
+    # v18: 페어 (table, unit) 또는 트리플 (table, unit, period) 모두 허용
+    period_per_table = {}
     if tables_with_units:
-        # tables 리스트는 (table, unit) 페어의 table 부분과 동일해야 함 (idx 일치)
         tables = [pair[0] for pair in tables_with_units]
         unit_per_table = {i: pair[1] for i, pair in enumerate(tables_with_units)}
+        for i, pair in enumerate(tables_with_units):
+            if len(pair) >= 3:
+                period_per_table[i] = pair[2]
+            else:
+                period_per_table[i] = None
     else:
         # 구 방식: 표별 단위 추정 (직전 3개 표 텍스트에서 '단위' 탐색)
         unit_per_table = {}
@@ -673,49 +679,103 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
                 unit_per_table[i] = 1_000
             else:
                 unit_per_table[i] = 1
+            period_per_table[i] = None
 
     def col_norm(c):
         return str(c).replace(" ", "").replace("　", "")
 
+    def col_is_current(cn: str) -> bool:
+        # 당기 컬럼 검사 (전기 제외)
+        if "전" in cn:
+            return False
+        return ("당기" in cn) or ("당)기" in cn) or ("당" in cn and "기" in cn)
+
+    def col_is_disclosure(cn: str) -> bool:
+        # v18: 2025+ 신규 포맷 '공시금액' / '금액' / '당기금액' 단일 컬럼
+        if cn in ("공시금액", "금액", "당기금액"):
+            return True
+        if "공시금액" in cn:
+            return True
+        return False
+
+    def col_is_total(cn: str) -> bool:
+        # v18: '합계', '총계', '계', '자산합계' 등 총액 컬럼 (분해표 대응)
+        if cn in ("합계", "총계", "계"):
+            return True
+        if "합계" in cn or "총계" in cn:
+            return True
+        return False
+
     candidates = {k: [] for k in targets.keys()}
 
     for i, t in enumerate(tables):
-        if t is None or t.shape[0] < 2 or t.shape[1] < 2:
+        # v18: 단일 row도 허용 (shape[0] < 1 만 제외)
+        if t is None or t.shape[0] < 1 or t.shape[1] < 2:
+            continue
+        # v18: 전기 표 스킵
+        if period_per_table.get(i) == "prior":
             continue
         cols = [col_norm(c) for c in t.columns]
-        # 당기/전기 컬럼이 있어야 함
-        has_period = any(("당기" in c or ("당" in c and "기" in c)) for c in cols)
-        if not has_period:
-            continue
         # 변동 분석 표 (기초/증가/감소/기말) 제외
         col_text = " ".join(cols)
         if "기초" in col_text and "기말" in col_text:
             continue
 
-        first_col = t.columns[0]
-        for idx in range(len(t)):
-            cell = t.iloc[idx][first_col]
-            if pd.isna(cell):
-                continue
-            cell_norm = str(cell).replace(" ", "").replace("　", "")
+        # value 컬럼 후보: 당기 컬럼 또는 (당기 마커 표인 경우) 공시금액 컬럼
+        value_cols = []
+        for c in t.columns:
+            cn = col_norm(c)
+            if col_is_current(cn):
+                value_cols.append(c)
+            elif col_is_disclosure(cn) and period_per_table.get(i) in ("current", None):
+                value_cols.append(c)
 
-            for key, patterns in targets.items():
-                if cell_norm in patterns:
-                    # 당기 컬럼에서 값 추출
-                    for c in t.columns:
-                        cn = col_norm(c)
-                        if "당기" in cn or "당)기" in cn or ("당" in cn and "기" in cn and "전" not in cn):
-                            v = to_number(t.iloc[idx][c])
-                            if v is not None:
-                                candidates[key].append({
-                                    "table_idx": i,
-                                    "row_idx": idx,
-                                    "value": v,
-                                    "unit_scale": unit_per_table[i],
-                                    "value_in_won": v * unit_per_table[i],
-                                    "column": str(c),
-                                })
-                                break
+        # v18: 당기 마커 표이면서 위 구조에 없었다면, '합계/총계' 총액 컬럼 허용
+        # (사용권자산 분해표 같은 카테고리별 세분표 대응)
+        if not value_cols and period_per_table.get(i) == "current":
+            for c in t.columns:
+                cn = col_norm(c)
+                if col_is_total(cn):
+                    value_cols.append(c)
+
+        if not value_cols:
+            continue
+
+        # 라벨 컬럼 후보: value_cols 제외한 모든 컬럼 (카테고리 헤더형 표 대응)
+        label_cols = [c for c in t.columns if c not in value_cols]
+        if not label_cols:
+            continue
+
+        for idx in range(len(t)):
+            # 모든 라벨 컬럼에서 매칭 시도
+            matched_key = None
+            for lc in label_cols:
+                cell = t.iloc[idx][lc]
+                if pd.isna(cell):
+                    continue
+                cell_norm = str(cell).replace(" ", "").replace("　", "")
+                for key, patterns in targets.items():
+                    if cell_norm in patterns:
+                        matched_key = key
+                        break
+                if matched_key:
+                    break
+            if not matched_key:
+                continue
+
+            # value_cols에서 첫 유효 값 추출 (abs로 차감 표기 대응)
+            for c in value_cols:
+                v = to_number(t.iloc[idx][c])
+                if v is not None:
+                    v_abs = abs(v)
+                    candidates[matched_key].append({
+                        "table_idx": i,
+                        "row_idx": idx,
+                        "value": v_abs,
+                        "unit_scale": unit_per_table[i],
+                        "value_in_won": v_abs * unit_per_table[i],
+                        "column": str(c),
+                    })
                     break
 
     # 각 키별 최대값 (가장 포괄적인 합계) 선택
@@ -751,15 +811,17 @@ def fetch_all_tables_from_audit(sub_docs: pd.DataFrame) -> list:
     return tables
 
 
-def fetch_audit_tables_with_units(sub_docs: pd.DataFrame) -> List[Tuple]:
+def fetch_audit_tables_with_units(sub_docs: pd.DataFrame, include_period: bool = False):
     """v16: 감사보고서 통합·주석 페이지에서 (table, unit_scale) 페어 리스트 반환.
+    v18: include_period=True이면 (table, unit_scale, period) 트리플 리스트 반환.
+          period는 'current' (당기) / 'prior' (전기) / None.
 
     이유: pd.read_html은 표 셀 내부만 읽어 표 사이 텍스트 노드의 '단위: 원/천원/백만원'
-    마커를 놓치는 경우가 많음 (한국 외감사는 주석 표가 통상 천원 단위이나 명시 없음).
-    BeautifulSoup으로 DOM 순회하며 (table 등장 제에 직전에 마지막으로 등장한 '단위: X' 텍스트를
-    상속) 적용.
+    마커를 놓치는 경우가 많음. BeautifulSoup으로 DOM 순회하며 텍스트 노드에 있는 마커를 상속.
 
-    을면 해당 표의 unit_scale은 이전 상속 값이얰 이어진다. 최소값=1(원).
+    v18: '당기 (단위 : 원)' / '전기 (단위 : 원)' 키 마커도 추가로 상속.
+    DART 2025년부터의 '공시금액' 단일 컴럼 포맷은 표 앞에 '당기'/'전기' 마커를 별도로 둘으므로
+    이를 상속해야 어느 표가 당기 데이터인지 구분 가능.
     """
     if sub_docs is None or sub_docs.empty:
         return []
@@ -802,11 +864,22 @@ def fetch_audit_tables_with_units(sub_docs: pd.DataFrame) -> List[Tuple]:
         soup = BeautifulSoup(html, "lxml")
         body = soup.find("body") or soup
 
+        # v18: period 추적 (당기/전기). 상속 방식 — 마지막으로 등장한 마커 적용.
+        PERIOD_RE = re.compile(r"(?<![가-힣])(당기|전기|당기말|전기말|당분기|전분기)(?![가-힣])")
+        def _period_norm(s: str) -> Optional[str]:
+            s = s.strip()
+            if s in ("당기", "당기말", "당분기"):
+                return "current"
+            if s in ("전기", "전기말", "전분기"):
+                return "prior"
+            return None
+
         current_unit = 1
+        current_period: Optional[str] = None
         for el in body.descendants:
             name = getattr(el, "name", None)
             if name is None:
-                # 텍스트 노드—단위 마커 검색
+                # 텍스트 노드—단위/period 마커 검색
                 try:
                     txt = str(el)
                 except Exception:
@@ -814,16 +887,27 @@ def fetch_audit_tables_with_units(sub_docs: pd.DataFrame) -> List[Tuple]:
                 m = UNIT_RE.search(txt)
                 if m:
                     current_unit = _unit_str_to_int(m.group(1))
+                pm = PERIOD_RE.search(txt)
+                if pm:
+                    p = _period_norm(pm.group(1))
+                    if p:
+                        current_period = p
             elif name == "table":
-                # 표 자체 텍스트에도 명시가 있을 수 있음 → 더 높은 우선 적용
+                # 표 자체 텍스트에도 명시가 있을 수 있음
                 t_txt = el.get_text(" ", strip=True)
                 m = UNIT_RE.search(t_txt[:300])
                 table_unit = _unit_str_to_int(m.group(1)) if m else current_unit
+                # period: 표 앞동 300자 이내에 당기/전기 명시 자체 있으면 강제, 아니면 상속 값
+                pm = PERIOD_RE.search(t_txt[:300])
+                table_period = _period_norm(pm.group(1)) if pm else current_period
                 # 표 파싱
                 try:
                     sub_tables = pd.read_html(_io.StringIO(str(el)))
                     for t in sub_tables:
-                        out.append((t, table_unit))
+                        if include_period:
+                            out.append((t, table_unit, table_period))
+                        else:
+                            out.append((t, table_unit))
                 except Exception:
                     pass
     return out
@@ -913,11 +997,12 @@ def fetch_da_from_business_report(_dart, corp_code: str, year: int,
     chosen = notes.iloc[0:1][["title", "url"]]
 
     try:
-        pairs = fetch_audit_tables_with_units(chosen)
-        if not pairs:
+        # v18: include_period=True로 당기/전기 마커 상속 적용 (2025+ 단일 컬럼 포맷 대응)
+        triples = fetch_audit_tables_with_units(chosen, include_period=True)
+        if not triples:
             return empty
-        tables_only = [p[0] for p in pairs]
-        return find_da_from_notes(tables_only, tables_with_units=pairs)
+        tables_only = [p[0] for p in triples]
+        return find_da_from_notes(tables_only, tables_with_units=triples)
     except Exception:
         return empty
 
