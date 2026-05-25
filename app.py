@@ -708,6 +708,67 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
 
     candidates = {k: [] for k in targets.keys()}
 
+    # v20: "비용의 성격별 분류" 표 식별자
+    # 이 표의 '감가상각비'는 통상 유형 + 사용권자산 합산값이므로 사용권을 다시 더하면 더블카운팅 발생.
+    #
+    # 강한 신호(마커): 표 안에 성격별 표 헤더 문구가 존재.
+    # 약한 신호: 성격별 표 특유의 행 라벨이 여러 개 등장. 단, CF 간접법 조정표는 "종업원급여부채"
+    # "판매보증비(환입)" 등 일부 라벨을 공유하므로 negative markers로 명시 배제 필요.
+    _NATURE_TABLE_MARKERS = (
+        "성격별비용합계", "비용의성격별분류", "영업비용의성격별",
+        "성격별영업비용", "비용의성격별",
+    )
+    # 결정적 양성 키워드: 성격별 분류 표에만 나타나는 라벨
+    _NATURE_TABLE_STRONG_HINTS = (
+        "재고자산의변동", "재고자산변동",
+        "사용된원재료", "사용된원재료및상품", "원재료의사용",
+        "원/부재료", "원재료매입",
+        "외주가공비",
+    )
+    # 보조 양성 키워드: 성격별에도 자주 나오지만 CF 조정표 등에도 등장
+    _NATURE_TABLE_WEAK_HINTS = (
+        "급료와임금", "종업원급여", "종업원급여복리후생비",
+        "퇴직급여", "판매보증비", "복리후생비",
+    )
+    # CF 간접법 조정표 / 이익잉여금처분계산서 등 비-성격별 표 부정 신호
+    _NATURE_TABLE_NEGATIVE_MARKERS = (
+        "영업활동관련자산", "영업활동으로인한자산", "영업으로창출된현금",
+        "영업활동현금흐름", "영업활동으로인한현금흐름",
+        "매출채권의감소", "매출채권의증가", "재고자산의감소",
+        "미수금의감소", "미지급금의증가", "선수금의증가", "선수금의감소",
+        "이익잉여금처분", "미처분이익잉여금",
+        "종업원급여부채의증가", "종업원급여부채의감소",
+    )
+
+    def is_nature_table(t) -> bool:
+        """표 내용 전체를 스캔해 성격별 분류 표인지 판단.
+
+        결정 규칙 (v20 강화):
+          1. negative marker 발견 시 즉시 False (CF 간접법 조정표 등 배제)
+          2. positive marker 발견 시 True
+          3. strong hint 1개 이상 + (strong+weak) 총 2개 이상이면 True
+             (종업원급여 + 판매보증비 같은 weak 조합만으로는 False — CF 조정표와 충돌)
+        """
+        try:
+            arr = t.fillna("").astype(str).values
+        except Exception:
+            return False
+        joined = "".join("".join(row) for row in arr).replace(" ", "").replace("　", "")
+        # (1) negative markers — CF 조정표/처분계산서 등
+        for nm in _NATURE_TABLE_NEGATIVE_MARKERS:
+            if nm in joined:
+                return False
+        # (2) positive markers
+        for mk in _NATURE_TABLE_MARKERS:
+            if mk in joined:
+                return True
+        # (3) 결정 키워드 1개 이상 + 총 hint 2개 이상
+        strong_hits = sum(1 for h in _NATURE_TABLE_STRONG_HINTS if h in joined)
+        weak_hits = sum(1 for h in _NATURE_TABLE_WEAK_HINTS if h in joined)
+        return strong_hits >= 1 and (strong_hits + weak_hits) >= 2
+
+    nature_table_flags: Dict[int, bool] = {}
+
     for i, t in enumerate(tables):
         # v18: 단일 row도 허용 (shape[0] < 1 만 제외)
         if t is None or t.shape[0] < 1 or t.shape[1] < 2:
@@ -768,6 +829,8 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
                 v = to_number(t.iloc[idx][c])
                 if v is not None:
                     v_abs = abs(v)
+                    if i not in nature_table_flags:
+                        nature_table_flags[i] = is_nature_table(t)
                     candidates[matched_key].append({
                         "table_idx": i,
                         "row_idx": idx,
@@ -775,6 +838,7 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
                         "unit_scale": unit_per_table[i],
                         "value_in_won": v_abs * unit_per_table[i],
                         "column": str(c),
+                        "is_nature_table": nature_table_flags[i],
                     })
                     break
 
@@ -785,6 +849,41 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
             result[key] = max(items, key=lambda x: x["value_in_won"])
         else:
             result[key] = None
+
+    # v20: 더블카운팅 방지 (개선된 판별)
+    # 성격별 분류 표의 "감가상각비" 행이 유형+사용권자산 합산값인지,
+    # 유형 단독값이고 사용권자산은 별도 행으로 나와 있는지 구분.
+    #
+    # 판별: 성격별 분류 표 내에 "사용권자산상각비" 행이 있는가?
+    #   → 있다: 감가상각비 = 유형 단독 (예: 한솔) → 둘 다 유지
+    #   → 없다: 감가상각비 = 유형+사용권 합산 (예: 한국석유공업)
+    #          → 다른 표에서 찾은 사용권자산은 더블카운팅 → 제거
+    #
+    # 구현: 다시 해당 표를 스캔해 '사용권자산상각비' 라벨 존재 여부 확인.
+    da = result.get("감가상각비")
+    rou = result.get("사용권자산상각비")
+    if da and da.get("is_nature_table") and rou:
+        da_tbl_idx = da["table_idx"]
+        rou_in_same_table = False
+        try:
+            t = tables[da_tbl_idx]
+            arr = t.fillna("").astype(str).values
+            for r in range(arr.shape[0]):
+                for c in range(arr.shape[1]):
+                    cell_norm = str(arr[r, c]).replace(" ", "").replace("　", "")
+                    if cell_norm in ("사용권자산상각비", "사용권자산감가상각비"):
+                        rou_in_same_table = True
+                        break
+                if rou_in_same_table:
+                    break
+        except Exception:
+            pass
+
+        # 성격별 표에 사용권 행이 없으면 감가상각비는 유형+사용권 합산 → 사용권 제거
+        if not rou_in_same_table:
+            result["사용권자산상각비"] = None
+            result["_da_includes_rou"] = True
+
     return result
 
 
