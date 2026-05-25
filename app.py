@@ -830,6 +830,99 @@ def fetch_audit_tables_with_units(sub_docs: pd.DataFrame) -> List[Tuple]:
 
 
 # ====================================================================
+# v17: 상장사 사업보고서 주석에서 D&A 보강
+# XBRL CF는 "비현금항목의 조정"으로 D&A를 통합 표시하므로 개별 행이 없음.
+# 사업보고서(kind='A')의 주석 페이지를 직접 파싱해 보강.
+# ====================================================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def find_annual_report_rcept(_dart, corp_code: str, year: int) -> Optional[str]:
+    """해당 회계연도의 정기 사업보고서(kind='A') rcept_no.
+
+    report_nm에 '사업보고서 (YYYY.MM)' 패턴이 있어야 하며, YYYY가 year와 일치.
+    분기/반기 보고서는 제외.
+    """
+    try:
+        start = f"{year+1}-01-01"
+        end = f"{year+2}-06-30"
+        reports = _dart.list(corp_code, start=start, end=end, kind="A")
+        if reports is None or reports.empty:
+            return None
+        reports = reports.copy()
+
+        def matches(nm):
+            nm = str(nm)
+            if "사업보고서" not in nm:
+                return False
+            m = re.search(r"\((\d{4})\.\d{2}\)", nm)
+            if m:
+                return int(m.group(1)) == year
+            return False
+
+        reports["_m"] = reports["report_nm"].apply(matches)
+        matched = reports[reports["_m"]]
+        if matched.empty:
+            return None
+        matched = matched.sort_values("rcept_dt", ascending=False)
+        return str(matched.iloc[0]["rcept_no"])
+    except Exception:
+        return None
+
+
+def fetch_da_from_business_report(_dart, corp_code: str, year: int,
+                                  prefer_consolidated: bool = True) -> Dict[str, Optional[Dict]]:
+    """사업보고서(kind='A')의 주석 페이지에서 D&A 추출 (상장사 XBRL 보강용).
+
+    1) find_annual_report_rcept → rcept_no
+    2) get_sub_docs → 주석 페이지 URL (연결재무제표 주석 우선)
+    3) fetch_audit_tables_with_units로 단위 상속 적용된 표 페어 리스트 구성
+    4) find_da_from_notes로 (감가/무형/사용권) 검색
+
+    반환: {'감가상각비': {value_in_won, ...} | None, '무형자산상각비': ..., '사용권자산상각비': ...}
+    실패 시 모든 키 None.
+    """
+    empty = {"감가상각비": None, "무형자산상각비": None, "사용권자산상각비": None,
+             "감가상각비_합산": None}
+    rcept = find_annual_report_rcept(_dart, corp_code, year)
+    if not rcept:
+        return empty
+    sub_docs = get_sub_docs(_dart, rcept)
+    if sub_docs is None or sub_docs.empty:
+        return empty
+    # 주석 페이지만 추출 — 연결 우선
+    notes_mask = sub_docs["title"].astype(str).str.contains("주석", na=False)
+    notes = sub_docs[notes_mask].copy()
+    if notes.empty:
+        return empty
+
+    # 연결재무제표 주석 우선, 없으면 재무제표 주석
+    def priority(t):
+        t = str(t)
+        if prefer_consolidated and "연결재무제표 주석" in t:
+            return 0
+        if (not prefer_consolidated) and "재무제표 주석" in t and "연결" not in t:
+            return 0
+        if "연결재무제표 주석" in t:
+            return 1
+        if "재무제표 주석" in t:
+            return 2
+        return 9
+
+    notes["_p"] = notes["title"].apply(priority)
+    notes = notes.sort_values("_p")
+    # 첫번째 매칭 페이지만 사용 (개별 페이지에 사업보고서 전체 D&A가 모두 있음)
+    chosen = notes.iloc[0:1][["title", "url"]]
+
+    try:
+        pairs = fetch_audit_tables_with_units(chosen)
+        if not pairs:
+            return empty
+        tables_only = [p[0] for p in pairs]
+        return find_da_from_notes(tables_only, tables_with_units=pairs)
+    except Exception:
+        return empty
+
+
+# ====================================================================
 # v14: "기타유동금융자산" 주석 분해
 # K-IFRS 외감사의 통합 계정 "기타유동금융자산" 안에 정기예금/단기금융상품/MMF 등
 # cash-like 항목과 단기대여금/보증금 등 비-cash 항목이 섞일 수 있음.
@@ -1337,6 +1430,36 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
+
+        # v17: 상장사 D&A 보강 — XBRL CF에는 개별 감가/상각 행이 없으므로
+        # 사업보고서 주석에서 별도 추출. 이미 HTML(외감 폴백) 경로에서 채워진
+        # 연도는 건드리지 않음.
+        da_missing_years = []
+        for y in years:
+            d = yearly_data.get(y) or {}
+            if all(d.get(k) is None for k in ("_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비")):
+                # 최소 한개 매출 또는 영업이익이 있어야 보강 의미 있음 (완전 실패 제외)
+                if d.get("매출액") is not None or d.get("영업이익") is not None:
+                    da_missing_years.append(y)
+
+        for i, y in enumerate(da_missing_years):
+            if progress_callback:
+                progress_callback(i, len(da_missing_years), f"D&A 주석 보강 {y}년")
+            da = fetch_da_from_business_report(_dart, corp_code, y, prefer_consolidated)
+            updated = False
+            if da.get("감가상각비") and da["감가상각비"].get("value_in_won") is not None:
+                yearly_data[y]["_유형자산감가상각비"] = da["감가상각비"]["value_in_won"]
+                updated = True
+            if da.get("무형자산상각비") and da["무형자산상각비"].get("value_in_won") is not None:
+                yearly_data[y]["_무형자산상각비"] = da["무형자산상각비"]["value_in_won"]
+                updated = True
+            if da.get("사용권자산상각비") and da["사용권자산상각비"].get("value_in_won") is not None:
+                yearly_data[y]["_사용권자산상각비"] = da["사용권자산상각비"]["value_in_won"]
+                updated = True
+            if updated:
+                meta = yearly_meta.get(y, {})
+                meta["da_source"] = "사업보고서 주석"
+                yearly_meta[y] = meta
 
     # ============ 외감 비상장사 ============
     else:  # E 등
