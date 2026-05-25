@@ -164,12 +164,21 @@ except Exception as e:
 # ====================================================================
 # 3) 유틸
 # ====================================================================
+# DART 공시 관행상 "-" / "–" / "—" 등은 "해당사항 없음 = 0"을 뜻함.
+# 빈 셀(NaN, "")과 구분해서 빈 셀은 None, 대시는 0으로 처리.
+# (DART HTML 파싱 시 은산 2024 장기차입금 같은 "일부 연도만 0" 케이스를 정확히 는기 위함)
+_DASH_TOKENS = {"-", "–", "—", "−", "ー"}
+
+
 def to_number(x) -> Optional[int]:
     if x is None or pd.isna(x):
         return None
     s = str(x).strip().replace(",", "").replace(" ", "").replace("\xa0", "")
-    if s in ("", "-", "nan", "None"):
+    if s in ("", "nan", "None"):
         return None
+    # 대시 표기(“-” 외 유니코드 변종 포함)는 0으로 해석
+    if s in _DASH_TOKENS:
+        return 0
     try:
         if s.startswith("(") and s.endswith(")"):
             s = "-" + s[1:-1]
