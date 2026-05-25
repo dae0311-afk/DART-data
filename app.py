@@ -24,13 +24,71 @@ import OpenDartReader
 # 0) 페이지 설정
 # ====================================================================
 st.set_page_config(
-    page_title="DART 재무정보 추출 에이전트",
-    page_icon="📊",
+    page_title="DART 재무분석",
+    page_icon="📈",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("📊 DART 재무정보 추출 에이전트")
-st.caption("v8 — 외감사 HTML + 주석 D&A fallback + 직전년 매출/차입금 표시 개선")
+# ----- 전역 스타일 -----
+st.markdown(
+    """
+    <style>
+    /* 상단 헤더 */
+    .hpe-header h2 {
+        margin: 0 0 2px 0;
+        font-weight: 700;
+        color: #1E3D6B;
+    }
+    .hpe-sub {
+        color: #888;
+        font-size: 0.9rem;
+        margin-bottom: 14px;
+    }
+    /* 섹션 타이틀 */
+    .hpe-section {
+        font-size: 1.0rem;
+        font-weight: 700;
+        color: #1E3D6B;
+        margin: 18px 0 6px 0;
+        padding-bottom: 4px;
+        border-bottom: 2px solid #d0d7e2;
+    }
+    /* 결과 컨테이너 카드 틀 */
+    .hpe-card {
+        border: 1px solid #d0d7e2;
+        border-radius: 10px;
+        padding: 14px 18px;
+        background: #f7f9fc;
+        margin-bottom: 12px;
+    }
+    /* 하단 디버그 영역 차분 */
+    .hpe-debug-header {
+        color: #888;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-top: 24px;
+        padding-top: 14px;
+        border-top: 1px dashed #d0d7e2;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ----- 헤더 -----
+st.markdown(
+    """
+    <div class="hpe-header">
+        <h2>📈 DART 재무분석 툴</h2>
+        <div class="hpe-sub">
+            Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.divider()
 
 # ====================================================================
 # 1) 상수
@@ -1156,7 +1214,20 @@ def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
 # ====================================================================
 # 8) UI
 # ====================================================================
-st.sidebar.header("🔍 검색 조건")
+# 사이드바 스타일
+_SIDEBAR_CSS = """
+<style>
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    color: #1E3D6B;
+    font-size: 1.0rem;
+    margin-top: 0.25rem;
+}
+section[data-testid="stSidebar"] hr { margin: 8px 0; }
+</style>
+"""
+st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
+st.sidebar.markdown("### 검색 조건")
 
 company_input = st.sidebar.text_input("회사명 또는 코드", placeholder="예: 삼성전자 / 005930 / 은산해운항공")
 
@@ -1379,7 +1450,10 @@ if search_btn:
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
-    st.subheader(f"1️⃣ 검색 결과 ({len(companies)}건)")
+    st.markdown(
+        f"<div class='hpe-section'>검색 결과 ({len(companies)}건)</div>",
+        unsafe_allow_html=True,
+    )
 
     display_cols = [c for c in ["corp_name", "corp_code", "stock_code", "ceo_nm",
                                 "corp_cls", "est_dt", "adres", "induty_code"]
@@ -1427,7 +1501,10 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
 
-        st.subheader(f"2️⃣ {corp_name} | {start_year}~{end_year} | {fs_div_target}")
+        st.markdown(
+            f"<div class='hpe-section'>{corp_name} | {start_year}~{end_year} | {fs_div_target}</div>",
+            unsafe_allow_html=True,
+        )
 
         progress = st.progress(0.0)
         status = st.empty()
@@ -1445,7 +1522,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         progress.empty()
         status.empty()
 
-        # 데이터 소스 표시
+        # 데이터 소스 수집 (하단 expander에서 표시)
         source_info = []
         for y in years:
             meta = yearly_meta.get(y, {})
@@ -1458,45 +1535,42 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                 "접수번호": meta.get("rcept_no", "-"),
                 "비고": meta.get("error", "-"),
             })
-        with st.expander("📋 데이터 소스 추적 (검증용)", expanded=True):
-            st.dataframe(pd.DataFrame(source_info), use_container_width=True, hide_index=True)
-
-        # 템플릿 표
+        # 요약 템플릿 표
+        st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years)
         st.dataframe(template_df, use_container_width=True, hide_index=True)
+        st.caption(
+            "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
+            "· EBITDA = 영업이익 + (유형자산감가상각비 + 무형자산상각비 + 사용권자산상각비). 주석 표기 상각비 누락 가능."
+        )
 
         # Valuation 관점 구성표 — 현금성자산 / 차입금
         cash_comp_df = build_cash_composition_table(yearly_data, yearly_meta, years)
         debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years)
 
-        st.markdown("##### 현금성자산 구성표 (Valuation 정의 상세)")
-        st.dataframe(cash_comp_df, use_container_width=True, hide_index=True)
-        st.caption(
-            "· 요약표 '현금성자산' = 이 구성표 합계 (현금및현금성자산 + 단기금융상품 + 단기투자자산 + 각종 단기 금융자산 + 장기금융상품).\n"
-            "· 사용제한·담보제공된 항목 존재 가능 → 최종 valuation 시 차감항 조정 필요 (주석 확인)."
-        )
-
-        st.markdown("##### 차입금 구성표 (Valuation 정의 상세)")
-        st.dataframe(debt_comp_df, use_container_width=True, hide_index=True)
-        st.caption(
-            "· 요약표 '총차입금' = 이 구성표 합계 (단기차입금 + 유동성장기부채 + 장기차입금 + 사채 + 리스부채 + CB/BW/EB).\n"
-            "· 리스부채 포함. IFRS 16 미적용 외감사·구 회계기준 채택 기업은 자동으로 0이 되므로 완전 추가 조정 필요.\n"
-            "· 주석·본문에만 기재된 차입 세부는 별도 검증 필요."
-        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
+            st.dataframe(cash_comp_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "· 요약표 '현금성자산' = 이 구성표 합계.\n"
+                "· 사용제한·담보 항목 존재 가능 → valuation 시 차감항 조정 필요."
+            )
+        with col_b:
+            st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
+            st.dataframe(debt_comp_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
+                "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
+            )
 
         # 결측 안내
         empty_years = [y for y in years
                        if not yearly_data[y] or all(v is None for v in yearly_data[y].values())]
         if empty_years:
             st.warning(
-                f"⚠️ 데이터 미수집 연도: {', '.join(map(str, empty_years))}\n\n"
-                "원인은 위 데이터 소스 표의 '비고' 컬럼을 확인하세요."
+                f"데이터 미수집 연도: {', '.join(map(str, empty_years))} · 하단 '데이터 소스 추적' 섹션 '비고' 컬럼 확인."
             )
-
-        st.caption(
-            "⚠️ EBITDA = 영업이익 + (유형자산감가상각비 + 무형자산상각비 + 사용권자산상각비). "
-            "주석 표기 상각비는 누락 가능. 외감 HTML 파싱은 표 0의 '단위' 표시를 자동 감지."
-        )
 
         # 엑셀 다운로드
         output = io.BytesIO()
@@ -1524,8 +1598,16 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             type="primary",
         )
 
-        # 디버그
-        with st.expander("🔬 외감 HTML 파싱 디버그"):
+        # ----- 하단: 검증 · 파싱 디버그 · 트래커 영역 -----
+        st.markdown(
+            "<div class='hpe-debug-header'>⚛️ 검증 · 파싱 디버그 · 소스 추적</div>",
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("데이터 소스 추적 (검증용)", expanded=False):
+            st.dataframe(pd.DataFrame(source_info), use_container_width=True, hide_index=True)
+
+        with st.expander("외감 HTML 파싱 디버그"):
             for y in years:
                 meta = yearly_meta.get(y, {})
                 if meta.get("source", "").startswith("HTML"):
