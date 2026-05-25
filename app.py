@@ -1,9 +1,11 @@
 """
-DART 재무정보 추출 에이전트 v6
+DART 재무정보 추출 에이전트 v8
 - PE 5개년 재무요약 템플릿
 - 상장사: finstate_all (XBRL) 우선
 - 외감 비상장사: 감사보고서 sub_docs HTML viewer 직접 파싱
 - 회사 검색: corp_code.xml 직접 조회 fallback (사명 변경 대응)
+- v7: D&A 주석 fallback (CF 통합 표시 케이스 대응)
+- v8: 첫 연도 매출 성장률 계산용 직전년 매출 추출 + 총차입금 None/0 구분
 """
 
 import io
@@ -28,7 +30,7 @@ st.set_page_config(
 )
 
 st.title("📊 DART 재무정보 추출 에이전트")
-st.caption("v6 — 외감사 HTML 파싱 + 사명 변경 대응 검색 fallback")
+st.caption("v8 — 외감사 HTML + 주석 D&A fallback + 직전년 매출/차입금 표시 개선")
 
 # ====================================================================
 # 1) 상수
@@ -814,6 +816,55 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
 
+    # ============================================================
+    # 첫 연도 매출 성장률 계산용 직전년 매출 추출
+    # 조회 범위 첫 연도(예: 2021)의 재무제표에 이미 전기(2020) 열이 존재하므로,
+    # 이를 재활용해 prev_year_revenue로 별도 저장.
+    # XBRL: extract_from_xbrl(year_offset=1), HTML: find_account_in_html(year_offset=1)
+    # ============================================================
+    first_year = min(years)
+    prev_rev_won = None  # 원 단위로 정규화해 저장
+    try:
+        meta = yearly_meta.get(first_year, {})
+        src = meta.get("source", "")
+        if src == "XBRL":
+            # base_year = first_year+1 의 XBRL이 first_year 데이터 제공했으므로
+            # first_year 자체의 base_year=first_year 호출에서 year_offset=1이 first_year-1
+            df = fetch_xbrl_finstate(_dart, corp_code, first_year, fs_div)
+            if df is not None and not df.empty:
+                prev = extract_from_xbrl(df, year_offset=1)
+                if prev.get("매출액") is not None:
+                    prev_rev_won = prev["매출액"]  # XBRL은 unit_scale=1
+        elif src in ("HTML(외감)", "HTML(외감 폴백)"):
+            # 외감사: first_year의 보고서에서 전기 열 읽기
+            reports = find_external_audit_reports(_dart, corp_code, first_year)
+            if reports:
+                chosen = next((r for r in reports if r["is_consolidated"]), reports[0]) \
+                    if prefer_consolidated else \
+                    next((r for r in reports if not r["is_consolidated"]), reports[0])
+                sub_docs = get_sub_docs(_dart, chosen["rcept_no"])
+                if sub_docs is not None:
+                    # IS 우선, 없으면 통합 페이지
+                    is_url = find_statement_url(sub_docs, "손익계산서") \
+                        or find_statement_url(sub_docs, "포괄손익계산서")
+                    is_df = parse_html_statement(is_url) if is_url else None
+                    if is_df is None:
+                        combined_url = find_statement_url(sub_docs, "재무제표")
+                        if combined_url:
+                            classified = parse_combined_statements(combined_url)
+                            is_df = classified.get("IS")
+                    if is_df is not None:
+                        prev_val = find_account_in_html(is_df, ACCOUNT_KEYWORDS["매출액"], year_offset=1)
+                        if prev_val is not None:
+                            # 메인 unit_scale 적용 (HTML 외감은 unit_scale이 단위에 따라서 이미 반영됨)
+                            us = yearly_meta[first_year].get("unit_scale", 1)
+                            prev_rev_won = prev_val * us
+        # 메타에 저장 (원 단위)
+        if prev_rev_won is not None:
+            yearly_meta[first_year]["prev_year_revenue_won"] = prev_rev_won
+    except Exception as e:
+        yearly_meta[first_year]["prev_year_revenue_error"] = str(e)
+
     return yearly_data, yearly_meta
 
 
@@ -845,7 +896,15 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
     sorted_years = sorted(years)
     for i, y in enumerate(sorted_years):
         if i == 0:
-            growth_row.append("N/A")
+            # 첫 연도: yearly_meta에 저장된 직전년 매출 활용 (원 단위)
+            curr = revenues[y]
+            prev_won = yearly_meta.get(y, {}).get("prev_year_revenue_won")
+            if curr is None or prev_won is None or prev_won == 0:
+                growth_row.append("N/A")
+            else:
+                # curr는 억원, prev_won은 원 → 억원으로 환산
+                prev_eok = prev_won / 1e8
+                growth_row.append(format_pct((curr - prev_eok) / abs(prev_eok) * 100))
         else:
             curr = revenues[y]
             prev = revenues[sorted_years[i - 1]]
@@ -894,10 +953,23 @@ def build_template_table(yearly_data: Dict, yearly_meta: Dict, years: List[int])
     rows.append(["자산총계"] + [format_eokwon(get_val_eokwon(y, "자산총계")) for y in years])
     rows.append(["  현금성자산"] + [format_eokwon(get_val_eokwon(y, "현금성자산")) for y in years])
     rows.append(["부채총계"] + [format_eokwon(get_val_eokwon(y, "부채총계")) for y in years])
-    rows.append(["  총차입금"] + [
-        format_eokwon(safe_sum_eokwon(y, ["_단기차입금", "_유동성장기부채", "_장기차입금", "_사채"]))
-        for y in years
-    ])
+    # 총차입금: 4개 항목 모두 None이고 부채총계가 정상 추출된 경우 → "0" 표시
+    # (실제 대차대조표에 차입금 항목 자체가 없는 케이스)
+    # BS 추출 자체가 실패한 경우에만 N/A
+    borrow_row = ["  총차입금"]
+    borrow_keys = ["_단기차입금", "_유동성장기부채", "_장기차입금", "_사채"]
+    for y in years:
+        d = yearly_data.get(y, {})
+        bv = safe_sum_eokwon(y, borrow_keys)
+        if bv is None:
+            # 4개 모두 None. 부채총계 추출 여부로 구분.
+            if d.get("부채총계") is not None:
+                borrow_row.append(format_eokwon(0.0))  # 실제 차입금 0
+            else:
+                borrow_row.append("N/A")
+        else:
+            borrow_row.append(format_eokwon(bv))
+    rows.append(borrow_row)
     rows.append(["자본총계"] + [format_eokwon(get_val_eokwon(y, "자본총계")) for y in years])
 
     columns = ["(단위: 억원)"] + [str(y) for y in years]
