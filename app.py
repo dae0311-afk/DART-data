@@ -2000,6 +2000,72 @@ def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
     )
 
 
+_DA_COMPOSITION_ITEMS = [
+    ("유형자산 감가상각비", "_유형자산감가상각비"),
+    ("무형자산 상각비", "_무형자산상각비"),
+    ("사용권자산 감가상각비", "_사용권자산상각비"),
+]
+
+
+def build_da_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List[int],
+                                unit_label: str = "억원") -> pd.DataFrame:
+    """D&A 구성표 (EBITDA 가산항).
+
+    구성:
+    - 유형 감가상각비 / 무형 상각비 / 사용권자산 감가상각비 각 항목 행
+    - 　합계 (D&A 총합 = EBITDA 가산항)
+    - 추출 소스 행 (연도별 da_source / source 표시)
+    """
+    sorted_years = sorted(years)
+
+    def get_won(year, key):
+        v = yearly_data.get(year, {}).get(key)
+        scale = yearly_meta.get(year, {}).get("unit_scale", 1)
+        return won_value(v, scale)
+
+    def fu(v_won):
+        return format_unit(to_unit(v_won, unit_label), unit_label)
+
+    rows = []
+    totals_won = {y: 0 for y in sorted_years}
+    any_total = {y: False for y in sorted_years}
+
+    for label, key in _DA_COMPOSITION_ITEMS:
+        vals = {y: get_won(y, key) for y in sorted_years}
+        rows.append([label] + [fu(vals[y]) for y in sorted_years])
+        for y in sorted_years:
+            if vals[y] is not None:
+                totals_won[y] += vals[y]
+                any_total[y] = True
+
+    # 합계 행
+    total_row = ["　합계 (D&A 총합 = EBITDA 가산항)"]
+    for y in sorted_years:
+        total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
+    rows.append(total_row)
+
+    # 추출 소스 행 (연도별)
+    src_row = ["　추출 소스"]
+    for y in sorted_years:
+        meta = yearly_meta.get(y, {}) or {}
+        src = meta.get("source", "")
+        da_src = meta.get("da_source")
+        if da_src:
+            # 상장사 D&A 보강: "XBRL + 사업보고서 주석" 같은 조합 표기
+            display = f"{src} + {da_src}" if src else da_src
+        else:
+            # 단일 소스 (HTML 외감/XBRL)
+            display = src or "-"
+        # 값이 모두 None이면 '-' 표기
+        if not any_total[y]:
+            display = "-"
+        src_row.append(display)
+    rows.append(src_row)
+
+    columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
+    return pd.DataFrame(rows, columns=columns)
+
+
 # ====================================================================
 # v15: 차트 헬퍼 (Plotly)
 # ====================================================================
@@ -2680,6 +2746,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # -------- Valuation 구성표 --------
         cash_comp_df = build_cash_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
         debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
+        da_comp_df = build_da_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -2698,6 +2765,16 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                 "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
             )
 
+        # -------- D&A 구성표 (차입금 구성 하단) --------
+        st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
+        st.dataframe(da_comp_df, use_container_width=True, hide_index=True)
+        st.caption(
+                "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
+                "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
+                "· N/A 연도는 해당 항목이 주석에서 매칭되지 않은 경우 (표제목/라벨 이질 또는 사용권자산 미공시).\n"
+                "· 사용권자산 감가상각비를 유형자산에 합산 표기하는 기업이 있어 행별 년도별 0 여부와 무관하게 합계는 올바른 값 가능."
+            )
+
         # 결측 안내
         empty_years = [y for y in years
                        if not yearly_data[y] or all(v is None for v in yearly_data[y].values())]
@@ -2712,6 +2789,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             template_df.to_excel(writer, sheet_name=f"요약_{unit_label}", index=False)
             cash_comp_df.to_excel(writer, sheet_name="현금성자산_구성", index=False)
             debt_comp_df.to_excel(writer, sheet_name="차입금_구성", index=False)
+            da_comp_df.to_excel(writer, sheet_name="D&A_구성", index=False)
             raw_rows = []
             for y in years:
                 d = yearly_data.get(y, {})
