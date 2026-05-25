@@ -453,6 +453,116 @@ def detect_unit_from_tables(tables: list) -> int:
     return 1
 
 
+def find_da_from_notes(tables: list) -> Dict[str, Optional[Dict]]:
+    """
+    감사보고서의 모든 표(통합 페이지/주석 페이지)에서 D&A 후보를 찾는다.
+    '비용성격별 분류' 등의 주석 표는 통상 '구분 | 당기 | 전기' 형태이고,
+    유형자산 변동표(기초/증가/감소/기말)와는 구분된다.
+    동일 키에 여러 후보가 있으면 (판관비 분석 vs 비용성격별 분류) 가장 큰 값을 선택.
+    반환: {유형자산감가상각비/무형자산상각비/사용권자산상각비/감가상각비_합산: {value_in_won, ...}}
+    """
+    targets = {
+        "감가상각비": ["감가상각비"],
+        "감가상각비_합산": ["감가상각비와무형자산상각비", "감가상각비및무형자산상각비"],
+        "무형자산상각비": ["무형자산상각비"],
+        "사용권자산상각비": ["사용권자산상각비", "사용권자산감가상각비"],
+    }
+
+    # 표별 단위 추정 (직전 3개 표 텍스트에서 '단위' 탐색)
+    unit_per_table = {}
+    for i in range(len(tables)):
+        local_text = ""
+        for j in range(max(0, i - 3), i + 1):
+            if j >= len(tables):
+                continue
+            try:
+                local_text += " ".join(tables[j].fillna("").astype(str).values.flatten().tolist())
+            except Exception:
+                continue
+        if re.search(r"단위\s*[:：]?\s*백만\s*원", local_text):
+            unit_per_table[i] = 1_000_000
+        elif re.search(r"단위\s*[:：]?\s*천\s*원", local_text):
+            unit_per_table[i] = 1_000
+        else:
+            unit_per_table[i] = 1
+
+    def col_norm(c):
+        return str(c).replace(" ", "").replace("　", "")
+
+    candidates = {k: [] for k in targets.keys()}
+
+    for i, t in enumerate(tables):
+        if t is None or t.shape[0] < 2 or t.shape[1] < 2:
+            continue
+        cols = [col_norm(c) for c in t.columns]
+        # 당기/전기 컬럼이 있어야 함
+        has_period = any(("당기" in c or ("당" in c and "기" in c)) for c in cols)
+        if not has_period:
+            continue
+        # 변동 분석 표 (기초/증가/감소/기말) 제외
+        col_text = " ".join(cols)
+        if "기초" in col_text and "기말" in col_text:
+            continue
+
+        first_col = t.columns[0]
+        for idx in range(len(t)):
+            cell = t.iloc[idx][first_col]
+            if pd.isna(cell):
+                continue
+            cell_norm = str(cell).replace(" ", "").replace("　", "")
+
+            for key, patterns in targets.items():
+                if cell_norm in patterns:
+                    # 당기 컬럼에서 값 추출
+                    for c in t.columns:
+                        cn = col_norm(c)
+                        if "당기" in cn or "당)기" in cn or ("당" in cn and "기" in cn and "전" not in cn):
+                            v = to_number(t.iloc[idx][c])
+                            if v is not None:
+                                candidates[key].append({
+                                    "table_idx": i,
+                                    "row_idx": idx,
+                                    "value": v,
+                                    "unit_scale": unit_per_table[i],
+                                    "value_in_won": v * unit_per_table[i],
+                                    "column": str(c),
+                                })
+                                break
+                    break
+
+    # 각 키별 최대값 (가장 포괄적인 합계) 선택
+    result = {}
+    for key, items in candidates.items():
+        if items:
+            result[key] = max(items, key=lambda x: x["value_in_won"])
+        else:
+            result[key] = None
+    return result
+
+
+def fetch_all_tables_from_audit(sub_docs: pd.DataFrame) -> list:
+    """감사보고서의 통합 재무제표 페이지 + 주석 페이지의 모든 표 합집합."""
+    if sub_docs is None or sub_docs.empty:
+        return []
+    tables = []
+    norm = sub_docs["title"].astype(str).str.replace(" ", "").str.replace("　", "")
+    # 통합 재무제표
+    matched = sub_docs[norm.str.contains("재무제표", na=False)]
+    for _, row in matched.head(2).iterrows():
+        try:
+            tables.extend(pd.read_html(row["url"]))
+        except Exception:
+            continue
+    # 주석
+    matched = sub_docs[norm == "주석"]
+    for _, row in matched.head(2).iterrows():
+        try:
+            tables.extend(pd.read_html(row["url"]))
+        except Exception:
+            continue
+    return tables
+
+
 def extract_external_audit_data(_dart, corp_code: str, year: int,
                                 prefer_consolidated: bool = True) -> Dict:
     """
@@ -520,6 +630,69 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
             "발견여부": "✓" if val is not None else "—",
         })
 
+    # ============================================================
+    # D&A fallback: CF에서 감가상각비/무형자산상각비/사용권자산상각비가 누락되면
+    # 주석 페이지를 포함한 모든 표에서 자동 탐색.
+    # CF에 통합 표시(예: "현금의 유출이 없는 비용등의 가산")만 있는 경우 대응.
+    # 주의: 주석 표의 값은 통상 천원 단위 → unit_scale 별도 적용.
+    # ============================================================
+    da_keys = ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"]
+    da_missing = [k for k in da_keys if result_data.get(k) is None]
+    da_fallback_used = False
+    da_fallback_info = {}
+    if da_missing:
+        # 통합/주석 페이지 표 전체 수집
+        all_audit_tables = fetch_all_tables_from_audit(sub_docs)
+        if all_audit_tables:
+            notes_da = find_da_from_notes(all_audit_tables)
+            # 매핑: 주석 키 → result_data 키
+            mapping = {
+                "_유형자산감가상각비": "감가상각비",
+                "_무형자산상각비": "무형자산상각비",
+                "_사용권자산상각비": "사용권자산상각비",
+            }
+            for r_key, n_key in mapping.items():
+                if result_data.get(r_key) is None:
+                    info = notes_da.get(n_key)
+                    if info is not None:
+                        # 주석에서 가져온 값은 원 단위(value_in_won).
+                        # result_data는 메인 unit_scale 기준으로 저장되어야
+                        # 후속 to_eokwon 계산에서 일관성 유지됨.
+                        # 따라서 원 단위값을 unit_scale로 나눠서 저장.
+                        won_value = info["value_in_won"]
+                        adjusted = int(won_value / unit_scale) if unit_scale else int(won_value)
+                        result_data[r_key] = adjusted
+                        da_fallback_info[r_key] = {
+                            "source": f"주석 표 {info['table_idx']}",
+                            "raw_value": info["value"],
+                            "table_unit": info["unit_scale"],
+                            "won_value": won_value,
+                            "adjusted_for_main_scale": adjusted,
+                        }
+                        da_fallback_used = True
+                        # debug 업데이트
+                        for d in debug:
+                            if d["항목"] == r_key:
+                                d["값(원단위)"] = won_value
+                                d["재무제표"] = f"주석(표{info['table_idx']})"
+                                d["발견여부"] = "✓ (주석 fallback)"
+                                break
+            # 만약 개별 항목이 다 누락이고 '감가상각비_합산'만 있으면
+            if all(result_data.get(k) is None for k in ["_유형자산감가상각비", "_무형자산상각비"]):
+                combined = notes_da.get("감가상각비_합산")
+                if combined is not None:
+                    won_value = combined["value_in_won"]
+                    adjusted = int(won_value / unit_scale) if unit_scale else int(won_value)
+                    result_data["_유형자산감가상각비"] = adjusted
+                    da_fallback_info["_유형자산감가상각비"] = {
+                        "source": f"주석 표 {combined['table_idx']} (감가상각비+무형자산상각비 합산)",
+                        "raw_value": combined["value"],
+                        "table_unit": combined["unit_scale"],
+                        "won_value": won_value,
+                        "adjusted_for_main_scale": adjusted,
+                    }
+                    da_fallback_used = True
+
     return {
         "data": result_data,
         "unit_scale": unit_scale,
@@ -529,6 +702,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         "debug": debug,
         "statement_urls": urls,
         "parsing_mode": "통합페이지" if used_combined else "항목분리",
+        "da_fallback_used": da_fallback_used,
+        "da_fallback_info": da_fallback_info,
     }
 
 
