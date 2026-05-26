@@ -81,9 +81,7 @@ st.markdown(
     """
     <div class="hpe-header">
         <h2>📈 DART 재무분석 툴</h2>
-        <div class="hpe-sub">
-            Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
-        </div>
+        <div class="hpe-sub">Highland PE &nbsp;·&nbsp; 내부 전용 &nbsp;|&nbsp; 출처: DART (dart.fss.or.kr)</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -2343,98 +2341,219 @@ def build_all_charts(metrics: Dict, years: List[int], unit_label: str = "억원"
 # ====================================================================
 # 8) UI
 # ====================================================================
-# 사이드바 스타일 + 본문 박스(info-pill) + segmented radio 스타일
 _UI_CSS = """
 <style>
-/* 사이드바 헤더 */
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 {
-    color: #1E3D6B;
-    font-size: 1.0rem;
-    margin-top: 0.25rem;
-}
-section[data-testid="stSidebar"] hr { margin: 8px 0; }
-
-/* 사이드바 라디오 - 가로 토글 형태 */
-section[data-testid="stSidebar"] div[role="radiogroup"] {
+/* ===== 메인 컨텐츠 라디오 → 옵션 토글 버튼 (연한 파란색) ===== */
+section[data-testid="stMain"] div[role="radiogroup"] {
     gap: 6px;
     flex-wrap: wrap;
+    display: flex;
+    align-items: center;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 8px 10px;
-    border: 1px solid #d6d6d6;
+section[data-testid="stMain"] div[role="radiogroup"] > label {
+    flex: 0 0 auto;
+    padding: 7px 20px;
+    border: 1.5px solid #C8DCEF;
     border-radius: 8px;
-    background: #ffffff;
+    background: #FFFFFF;
     cursor: pointer;
     text-align: center;
-    margin: 0 !important;
+    margin: 0 3px 0 0 !important;
     transition: all 0.15s ease;
+    font-size: 0.9rem;
+    color: #445566;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
-    border-color: #E5862E;
+section[data-testid="stMain"] div[role="radiogroup"] > label:hover {
+    border-color: #4A90D9;
+    background: #F0F8FF;
+    color: #1A5BAB;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label[data-checked="true"],
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
-    border: 2px solid #C7383C;
-    background: #FEEFEF;
-    font-weight: 600;
-}
-/* 라디오 동그라미 숨김 - 라벨만 표시 */
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
-    display: none;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
-    width: 100%;
-}
-
-/* 본문 헤더 둥근 박스 (info-pill) */
-.info-pill-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin: 10px 0 14px 0;
-}
-.info-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    border-radius: 999px;
-    border: 1px solid #d8d8d8;
-    background: #f7f9fc;
-    font-size: 0.95rem;
-    color: #1E3D6B;
-}
-.info-pill .pill-key {
-    color: #6b7785;
-    font-size: 0.82rem;
-}
-.info-pill .pill-val {
+section[data-testid="stMain"] div[role="radiogroup"] > label[data-checked="true"],
+section[data-testid="stMain"] div[role="radiogroup"] > label:has(input:checked) {
+    border: 2px solid #2B7CD3;
+    background: #DFF0FF;
+    color: #1A5BAB;
     font-weight: 700;
 }
-.info-pill.pill-primary {
-    background: #1E3D6B;
-    color: #ffffff;
-    border-color: #1E3D6B;
+section[data-testid="stMain"] div[role="radiogroup"] > label > div:first-child {
+    display: none;
 }
-.info-pill.pill-primary .pill-key { color: #c9d4e3; }
-.info-pill.pill-accent {
-    background: #FEEFEF;
-    border-color: #E5862E;
-    color: #C7383C;
+section[data-testid="stMain"] div[role="radiogroup"] > label > div {
+    width: auto;
 }
-.info-pill.pill-accent .pill-key { color: #9a5a2b; }
+
+/* ===== 헤더 ===== */
+.hpe-header h2 { margin: 0 0 2px 0; font-weight: 700; color: #1E3D6B; }
+.hpe-sub { color: #888; font-size: 0.9rem; margin-bottom: 14px; }
+.hpe-section {
+    font-size: 1.0rem;
+    font-weight: 700;
+    color: #1E3D6B;
+    margin: 20px 0 8px 0;
+    padding-bottom: 5px;
+    border-bottom: 2px solid #D0DEF0;
+}
+
+/* ===== 조회 옵션 섹션 레이블 ===== */
+.opt-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #5A7090;
+    margin-bottom: 4px;
+    margin-top: 8px;
+}
+.opt-caption {
+    font-size: 0.8rem;
+    color: #7A99BE;
+    margin-top: 6px;
+}
+
+/* ===== 결과 배지 행 ===== */
+.badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 16px 0;
+    align-items: center;
+}
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 16px;
+    border-radius: 999px;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+.badge-corp { background: #1E3D6B; color: #fff; }
+.badge-fs   { background: #E8F4FE; color: #1A5BAB; border: 1px solid #A8CFEE; }
+.badge-unit { background: #EEF9F0; color: #2D7A3A; border: 1px solid #A8D9B0; }
+
+/* ===== 재무 테이블 ===== */
+.fin-tbl-wrap {
+    overflow-x: auto;
+    border-radius: 10px;
+    border: 1px solid #D8E6F3;
+    margin-bottom: 8px;
+    box-shadow: 0 1px 5px rgba(30,61,107,0.08);
+}
+.fin-tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    background: #fff;
+    min-width: 480px;
+}
+.fin-tbl thead th {
+    background: #3A4D66;
+    color: #fff;
+    padding: 11px 16px;
+    text-align: center;
+    font-weight: 600;
+    white-space: nowrap;
+    border: none;
+}
+.fin-tbl thead th:first-child { text-align: left; }
+.fin-tbl tbody td {
+    padding: 9px 16px;
+    border-bottom: 1px solid #EBF0F6;
+    white-space: nowrap;
+    text-align: right;
+    color: #333;
+}
+.fin-tbl tbody td.lbl { text-align: left; }
+.fin-tbl tbody tr.main-r > td { font-weight: 700; color: #1A2333; }
+.fin-tbl tbody tr.main-r > td.lbl { font-weight: 700; color: #1A2333; }
+.fin-tbl tbody tr.sub-r > td { font-style: italic; color: #7A8C9E; font-size: 0.84rem; }
+.fin-tbl tbody tr.sub-r > td.lbl { padding-left: 28px; font-style: italic; color: #7A8C9E; }
+.fin-tbl tbody tr.ind-r > td.lbl { padding-left: 22px; color: #556677; }
+.fin-tbl tbody tr.ind-r > td { color: #556677; }
+.fin-tbl tbody tr.hdr-r > td {
+    background: #F5F8FC; color: #5A7090; font-size: 0.82rem;
+    font-weight: 600; font-style: normal; text-align: left !important;
+}
+.fin-tbl tbody tr.tot-r > td {
+    font-weight: 700; border-top: 2px solid #C8DCEF; color: #1A3560;
+}
+.fin-tbl tbody tr:last-child > td { border-bottom: none; }
+.fin-tbl tbody tr:hover > td { background: #F5F9FF !important; }
+.fin-tbl .neg { color: #C0392B; }
+
+/* ===== 카드 · 디버그 ===== */
+.hpe-card {
+    border: 1px solid #D0D7E2; border-radius: 10px;
+    padding: 14px 18px; background: #F7F9FC; margin-bottom: 12px;
+}
+.hpe-debug-header {
+    color: #888; font-size: 0.85rem; font-weight: 600;
+    margin-top: 24px; padding-top: 14px; border-top: 1px dashed #d0d7e2;
+}
+
+/* ===== 구 pill (하위 호환) ===== */
+.info-pill-row { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 14px 0; }
+.info-pill { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:999px; border:1px solid #d8d8d8; background:#f7f9fc; font-size:0.95rem; color:#1E3D6B; }
+.info-pill .pill-key { color:#6b7785; font-size:0.82rem; }
+.info-pill .pill-val { font-weight:700; }
+.info-pill.pill-primary { background:#1E3D6B; color:#fff; border-color:#1E3D6B; }
+.info-pill.pill-primary .pill-key { color:#c9d4e3; }
+.info-pill.pill-accent { background:#FEEFEF; border-color:#E5862E; color:#C7383C; }
+.info-pill.pill-accent .pill-key { color:#9a5a2b; }
+
+/* ===== 사이드바 ===== */
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 { color: #1E3D6B; font-size:1.0rem; margin-top:0.25rem; }
+section[data-testid="stSidebar"] hr { margin: 8px 0; }
 </style>
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
 
-# ----- 좌측 사이드바: 조회 옵션 (토글 3그룹) -----
-st.sidebar.markdown("### ⚙️ 조회 옵션")
+# ====================================================================
+# 재무 테이블 HTML 렌더러
+# ====================================================================
+def render_fin_table(df: pd.DataFrame) -> str:
+    """재무 테이블 HTML 렌더러 — 다크 헤더, 행 타입별 스타일."""
+    def _row_cls(label: str) -> str:
+        l = str(label)
+        if l.startswith("["):
+            return "hdr-r"
+        if l.startswith("  ") or l.startswith("　"):
+            stripped = l.strip()
+            if "합계" in stripped or "추출 소스" in stripped:
+                return "tot-r"
+            if stripped in ("Growth", "Margin") or stripped.startswith("Growth") or stripped.startswith("Margin"):
+                return "sub-r"
+            return "ind-r"
+        return "main-r"
 
-st.sidebar.markdown("**재무제표 구분**")
-fs_label = st.sidebar.radio(
+    def _esc(s: str) -> str:
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    parts = ['<div class="fin-tbl-wrap"><table class="fin-tbl"><thead><tr>']
+    for col in df.columns:
+        parts.append(f'<th>{_esc(str(col))}</th>')
+    parts.append('</tr></thead><tbody>')
+
+    for _, row in df.iterrows():
+        label = str(row.iloc[0])
+        cls = _row_cls(label)
+        parts.append(f'<tr class="{cls}">')
+        parts.append(f'<td class="lbl">{_esc(label.strip())}</td>')
+        for val in row.iloc[1:]:
+            s = str(val)
+            if s.startswith("("):
+                parts.append(f'<td class="neg">{_esc(s)}</td>')
+            else:
+                parts.append(f'<td>{_esc(s)}</td>')
+        parts.append('</tr>')
+
+    parts.append('</tbody></table></div>')
+    return ''.join(parts)
+
+
+# ----- 메인 컨텐츠: 조회 옵션 카드 -----
+st.markdown("<div class='hpe-section'>⚙️ 조회 옵션</div>", unsafe_allow_html=True)
+
+st.markdown("<div class='opt-label'>재무제표 구분</div>", unsafe_allow_html=True)
+fs_label = st.radio(
     "재무제표 구분",
     ["연결", "별도"],
     index=0,
@@ -2444,8 +2563,8 @@ fs_label = st.sidebar.radio(
 )
 fs_div_target = "CFS" if fs_label == "연결" else "OFS"
 
-st.sidebar.markdown("**조회 기간**")
-period_label = st.sidebar.radio(
+st.markdown("<div class='opt-label'>조회 기간</div>", unsafe_allow_html=True)
+period_label = st.radio(
     "조회 기간",
     ["5년", "10년", "20년", "최대"],
     index=0,
@@ -2455,8 +2574,8 @@ period_label = st.sidebar.radio(
 )
 period_map = {"5년": 5, "10년": 10, "20년": 20, "최대": 99}
 
-st.sidebar.markdown("**표시 단위**")
-unit_label = st.sidebar.radio(
+st.markdown("<div class='opt-label'>표시 단위</div>", unsafe_allow_html=True)
+unit_label = st.radio(
     "표시 단위",
     ["백만원", "억원", "십억원"],
     index=1,
@@ -2464,8 +2583,7 @@ unit_label = st.sidebar.radio(
     label_visibility="collapsed",
     key="unit_radio",
 )
-
-st.sidebar.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
+st.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
 
 current_year = datetime.now().year
 end_year = current_year - 1  # 종료연도는 직전 회계연도 자동 고정
@@ -2650,24 +2768,24 @@ def search_companies(_dart, _api_key: str, query: str) -> pd.DataFrame:
 # ----- 본문 상단: 기업 검색 영역 -----
 st.markdown("<div class='hpe-section'>🔎 기업 검색</div>", unsafe_allow_html=True)
 
-search_col1, search_col2, search_col3 = st.columns([5, 1.2, 1.2])
-with search_col1:
-    company_input = st.text_input(
-        "회사명 또는 고유번호",
-        placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885",
-        label_visibility="collapsed",
-        key="company_input",
-    )
-with search_col2:
-    search_btn = st.button("🔍 검색", use_container_width=True, type="primary")
-with search_col3:
-    refresh_cache_btn = st.button(
-        "🔄 캐시",
-        help="사명이 업데이트 안될 때 눌러 corp_code.xml 재다운로드",
-        use_container_width=True,
-    )
+with st.form(key="search_form", enter_to_submit=True):
+    search_col1, search_col2 = st.columns([6, 1.5])
+    with search_col1:
+        company_input = st.text_input(
+            "회사명 또는 고유번호",
+            placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885",
+            label_visibility="collapsed",
+            key="company_input",
+        )
+    with search_col2:
+        search_btn = st.form_submit_button("🔍 검색", use_container_width=True, type="primary")
 
-# 캐시 새로고침 (함수 정의 이후에서 처리)
+refresh_cache_btn = st.button(
+    "🔄 캐시 새로고침",
+    help="사명이 업데이트 안될 때 눌러 corp_code.xml 재다운로드",
+)
+
+# 캐시 새로고침 처리
 if refresh_cache_btn:
     download_corp_code_xml.clear()
     search_companies.clear()
@@ -2780,23 +2898,23 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             main_fs = fs_div_target
         main_fs_label = "연결" if main_fs == "CFS" else "별도"
 
-        # -------- 헤더 둥근 박스 4개 --------
+        # -------- 결과 배지 행 --------
         period_disp = f"{start_year}~{end_year}"
-        pill_html = (
-            "<div class='info-pill-row'>"
-            f"<div class='info-pill pill-primary'><span class='pill-key'>회사</span> <span class='pill-val'>{corp_name}</span></div>"
-            f"<div class='info-pill'><span class='pill-key'>구분</span> <span class='pill-val'>{main_fs_label}재무제표</span></div>"
-            f"<div class='info-pill pill-accent'><span class='pill-key'>단위</span> <span class='pill-val'>{unit_label}</span></div>"
-            f"<div class='info-pill'><span class='pill-key'>기간</span> <span class='pill-val'>{period_disp}</span></div>"
+        badge_html = (
+            "<div class='badge-row'>"
+            f"<div class='badge badge-corp'>{corp_name}</div>"
+            f"<div class='badge badge-fs'>{main_fs_label}</div>"
+            f"<div class='badge badge-unit'>{unit_label}</div>"
+            f"<div class='badge' style='background:#F0F4FA;color:#4A5568;border:1px solid #CBD5E0;'>{period_disp}</div>"
             "</div>"
         )
-        st.markdown(pill_html, unsafe_allow_html=True)
+        st.markdown(badge_html, unsafe_allow_html=True)
 
         # 연결 fallback 안내
         if fs_div_target == "CFS" and fallback_years:
-            st.warning(
-                f"⚠️ 연결재무제표를 요청했으나 다음 연도는 별도재무제표로 대체되었습니다: "
-                f"{', '.join(map(str, fallback_years))} · 해당 연도에는 연결보고서가 공시되지 않아 별도를 표시."
+            st.info(
+                f"ℹ️ {start_year}~{end_year}년은 연결재무제표가 없어 일부 연도({', '.join(map(str, fallback_years))})는 "
+                f"별도 기준으로 표시했습니다."
             )
 
         # -------- 데이터 소스 수집 --------
@@ -2817,11 +2935,11 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # -------- 요약 재무제표 --------
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
-        st.dataframe(template_df, use_container_width=True, hide_index=True)
+        st.markdown(render_fin_table(template_df), unsafe_allow_html=True)
         st.caption(
-            f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
-            "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
-            "· EBITDA = 영업이익 + (유형자산감가상각비 + 무형자산상각비 + 사용권자산상각비). 주석 표기 상각비 누락 가능."
+            f"· 표시 단위: {unit_label} · 증감률은 퍼센트. "
+            "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의). "
+            "· EBITDA = 영업이익 + D&A (유형·무형·사용권). 주석 상각비 누락 가능."
         )
 
         # -------- 차트 5개 --------
@@ -2850,29 +2968,29 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
-            st.dataframe(cash_comp_df, use_container_width=True, hide_index=True)
+            st.markdown(render_fin_table(cash_comp_df), unsafe_allow_html=True)
             st.caption(
-                "· 요약표 '현금성자산' = 이 구성표 합계.\n"
-                "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
-                "· 사용제한·담보 항목 존재 가능 → valuation 시 차감항 조정 필요."
+                "· 요약표 '현금성자산' = 이 구성표 합계. "
+                "· 기타유동금융자산은 외감사 통합 계정 — 정기예금·MMF 외 대여금·보증금 포함 가능 → 주석 확인. "
+                "· 사용제한·담보 항목 존재 가능 → valuation 시 차감 조정."
             )
         with col_b:
             st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
-            st.dataframe(debt_comp_df, use_container_width=True, hide_index=True)
+            st.markdown(render_fin_table(debt_comp_df), unsafe_allow_html=True)
             st.caption(
-                "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
-                "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
+                "· 요약표 '총차입금' = 이 구성표 합계 (리스부채·CB/BW/EB 포함). "
+                "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정."
             )
 
-        # -------- D&A 구성표 (차입금 구성 하단) --------
+        # -------- D&A 구성표 --------
         st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
-        st.dataframe(da_comp_df, use_container_width=True, hide_index=True)
+        st.markdown(render_fin_table(da_comp_df), unsafe_allow_html=True)
         st.caption(
-                "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
-                "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
-                "· N/A 연도는 해당 항목이 주석에서 매칭되지 않은 경우 (표제목/라벨 이질 또는 사용권자산 미공시).\n"
-                "· 사용권자산 감가상각비를 유형자산에 합산 표기하는 기업이 있어 행별 년도별 0 여부와 무관하게 합계는 올바른 값 가능."
-            )
+            "· EBITDA = 영업이익 + D&A (유형·무형·사용권). "
+            "· 상장사 XBRL CF는 개별 D&A 행이 없어 사업보고서 주석에서 보강. "
+            "· N/A: 주석에서 항목 미매칭 또는 사용권자산 미공시. "
+            "· 사용권자산을 유형에 합산 표기하는 기업은 합계 값은 정상."
+        )
 
         # 결측 안내
         empty_years = [y for y in years
