@@ -2223,10 +2223,12 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                       unit_label: str,
                       bar_name: str, line_name: str,
                       bar_color: str = "#1E3D6B", line_color: str = "#E5862E"):
-    """막대(금액) + 라인(%) 콤보 차트 — 상하 subplot 분리 (겹침 방지).
-    v27: 상단 라인 (이익률/성장률) + 하단 바 (금액), 공유 x축.
-         바는 y=0에서 시작 (rangemode=tozero), 두께↑ (bargap=0.65),
-         모든 텍스트/숫자는 검정색 (#000).
+    """막대(금액) + 라인(%) 콤보 차트 — 상하 subplot 분리.
+    v29 수정:
+      - 하단 바 y축 범위를 [0, max*1.25] 명시 할당 → 바닥이 x축에 정확히 닿음
+        (rangemode=tozero는 한계가 있으므로)
+      - 모든 텍스트/숫자 14px (요약재무제표 st.dataframe 수준)
+      - 레이블→막대/마커 간격 확보: bar max*1.25, vertical_spacing↑
     """
     go = _import_plotly()
     if go is None:
@@ -2243,11 +2245,12 @@ def _make_combo_chart(title: str, sorted_years: List[int],
     line_text = [_format_pct_label(v) for v in ys_line]
 
     BLACK = "#000000"
+    FONT_SIZE = 14  # 요약재무제표 st.dataframe 수준 (Streamlit 기본)
 
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.30, 0.70],
-        vertical_spacing=0.06,
+        row_heights=[0.32, 0.68],
+        vertical_spacing=0.10,  # 상/하 간격 확보 (라인↔바 겁침 방지 + 여백)
     )
 
     # 상단: 라인 (이익률/성장률 등)
@@ -2255,9 +2258,9 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         x=xs, y=ys_line, name=line_name,
         mode="lines+markers+text",
         line=dict(color=line_color, width=2.5),
-        marker=dict(size=8, color=line_color),
+        marker=dict(size=9, color=line_color),
         text=line_text, textposition="top center",
-        textfont=dict(size=12, color=BLACK),
+        textfont=dict(size=FONT_SIZE, color=BLACK),
         cliponaxis=False,
         hovertemplate=f"%{{x}}<br>{line_name}: %{{text}}<extra></extra>",
     ), row=1, col=1)
@@ -2267,7 +2270,7 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         x=xs, y=ys_bar, name=bar_name,
         marker_color=bar_color,
         text=bar_text, textposition="outside",
-        textfont=dict(size=12, color=BLACK),
+        textfont=dict(size=FONT_SIZE, color=BLACK),
         cliponaxis=False,
         hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
     ), row=2, col=1)
@@ -2275,34 +2278,58 @@ def _make_combo_chart(title: str, sorted_years: List[int],
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
                    font=dict(size=18, color=BLACK)),
-        height=520,
-        margin=dict(l=40, r=40, t=80, b=40),
+        height=540,
+        margin=dict(l=40, r=40, t=90, b=40),
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=1.08, xanchor="center", x=0.5,
-                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=12)),
-        bargap=0.65,  # 바 두께 줄이기 (간격 넘으면 바 가느다랑)
-        font=dict(color=BLACK),
+                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
+        bargap=0.65,
+        font=dict(color=BLACK, size=FONT_SIZE),
     )
-    # 상단 라인 축
-    fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=1, col=1)
+    # 상단 라인 축 — 레이블 공간 확보 위해 range 수동 확장
+    _line_vals = [v for v in ys_line if v is not None]
+    if _line_vals:
+        _l_min = min(_line_vals + [0])
+        _l_max = max(_line_vals + [0])
+        _l_pad = max((_l_max - _l_min) * 0.30, abs(_l_max) * 0.20, 5)
+        fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
+                         range=[_l_min - _l_pad, _l_max + _l_pad], row=1, col=1)
+    else:
+        fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=1, col=1)
     fig.update_xaxes(visible=False, row=1, col=1)
-    # 하단 바 축 — 바닥이 x축에 닿도록 rangemode="tozero"
-    fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
-                     rangemode="tozero", row=2, col=1)
+
+    # 하단 바 축 — 명시적 range [0, max*1.25]으로 바닥 x축에 닿게 + 레이블 공간 확보
+    _bar_vals = [v for v in ys_bar if v is not None]
+    if _bar_vals:
+        _b_max = max(_bar_vals)
+        _b_min = min(_bar_vals + [0])
+        if _b_min < 0:
+            # 음수 존재 → 0을 포함하되 파도될 수 있도록 range 확장
+            _b_pad = (_b_max - _b_min) * 0.20
+            fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
+                             range=[_b_min - _b_pad, _b_max + _b_pad], row=2, col=1)
+        else:
+            # 양수만 → [0, max*1.25] 명시 → 바닥이 x축에 정확히 닿음
+            fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
+                             range=[0, _b_max * 1.25], row=2, col=1)
+    else:
+        fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
+                         rangemode="tozero", row=2, col=1)
     fig.update_xaxes(showgrid=False, showline=True,
                      linecolor=BLACK, linewidth=1,
-                     tickfont=dict(size=13, color=BLACK), row=2, col=1)
+                     tickfont=dict(size=FONT_SIZE, color=BLACK), row=2, col=1)
     return fig
 
 
 def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit_label: str):
-    """재무상태 5라인 차트. v27: 모든 텍스트 검정색."""
+    """재무상태 5라인 차트. v29: 텍스트 14px 통일."""
     go = _import_plotly()
     if go is None:
         return None
     BLACK = "#000000"
+    FONT_SIZE = 14
     series_def = [
         ("자산총계", "total_assets",      "#1E3D6B"),
         ("현금성자산", "cash_equiv",      "#7DB8E8"),
@@ -2322,22 +2349,22 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
             line=dict(color=color, width=2.5),
             marker=dict(size=9, color=color),
             text=text_labels, textposition="top center",
-            textfont=dict(size=11, color=BLACK),
+            textfont=dict(size=FONT_SIZE, color=BLACK),
             hovertemplate=f"%{{x}}<br>{label}: %{{text}} {unit_label}<extra></extra>",
         ))
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
                    font=dict(size=18, color=BLACK)),
-        height=520,
+        height=540,
         margin=dict(l=40, r=40, t=90, b=40),
         plot_bgcolor="white",
         paper_bgcolor="white",
         legend=dict(orientation="h", yanchor="top", y=1.10, xanchor="center", x=0.5,
-                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=12)),
+                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         xaxis=dict(showgrid=False, showline=True, linecolor=BLACK, linewidth=1,
-                   tickfont=dict(size=13, color=BLACK)),
+                   tickfont=dict(size=FONT_SIZE, color=BLACK)),
         yaxis=dict(visible=False, showgrid=False, zeroline=False),
-        font=dict(color=BLACK),
+        font=dict(color=BLACK, size=FONT_SIZE),
     )
     return fig
 
@@ -2744,10 +2771,11 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    # v28: AgGrid 도입 — 셀 클릭 시 행 전체 자동 선택 + 체크박스 표시
-    # - 컬럼: 회사명, 대표이사, 주소 (기업코드/산업코드 제거)
-    # - 어느 셀이든 클릭하면 그 행 체크박스가 자동 토글됨
-    # - 선택 전에는 데이터 추출 버튼 disabled, 선택 후 primary(빨간색)
+    # v29: AgGrid — 체크박스 숨김 + 셀 테두리 제거 + 행 선택만 표시
+    # - 컬럼: 회사명, 대표이사, 주소
+    # - 셀 클릭으로 행 선택 (체크박스 UI 없이)
+    # - 셀 단위 포커스 테두리 숨김
+    # - 이전 st.dataframe 포맷(폰트/패딩/헤더 스타일)에 근접
     _display_col_map = {
         "corp_name": "회사명",
         "ceo_nm": "대표이사",
@@ -2766,25 +2794,54 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     selected_idx = None
 
     if _AGGRID_AVAILABLE:
+        # v29: AgGrid 이전 표 형태에 맞춰서 스타일 주입
+        # - 셀 테두리(focus border) 제거
+        # - 행 선택 연라이트 파랑 유지
+        # - 폰트 14px, st.dataframe스러운 레이아움
+        st.markdown("""
+            <style>
+            /* v29: AgGrid 셀 포커스 테두리 제거 */
+            .ag-cell-focus, .ag-cell-no-focus, .ag-cell {
+                border: none !important;
+                outline: none !important;
+            }
+            .ag-cell:focus {
+                border: none !important;
+                outline: none !important;
+            }
+            .ag-theme-streamlit .ag-cell {
+                font-size: 14px !important;
+            }
+            .ag-theme-streamlit .ag-header-cell-text {
+                font-size: 14px !important;
+                font-weight: 600 !important;
+            }
+            /* 선택된 행 하이라이트 (연한 파랑) */
+            .ag-theme-streamlit .ag-row-selected {
+                background-color: #E3F2FD !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+
         gb = GridOptionsBuilder.from_dataframe(df_show_with_idx)
-        # 체크박스 + 셀 클릭 시 행 선택
+        # v29: 체크박스 없이 셀 클릭만으로 선택
         gb.configure_selection(
             selection_mode="single",
-            use_checkbox=True,
+            use_checkbox=False,         # 체크박스 숨김
             header_checkbox=False,
             rowMultiSelectWithClick=False,
             suppressRowDeselection=False,
         )
-        # 첫 컬럼(회사명)에 체크박스 표시
-        gb.configure_column("회사명", checkboxSelection=True, headerCheckboxSelection=False, width=180)
+        # 컬럼 설정 — 체크박스 제거
+        gb.configure_column("회사명", checkboxSelection=False, headerCheckboxSelection=False, width=180)
         gb.configure_column("대표이사", width=120)
         gb.configure_column("주소", flex=1)
         gb.configure_column("_row_idx", hide=True)
-        # 셀 클릭 시 행 선택 토글되도록 설정
+        # v29: 셀 포커스 숨김 + 행 선택 유지
         gb.configure_grid_options(
-            suppressCellFocus=False,
+            suppressCellFocus=True,             # 셀 단위 포커스 테두리 숨김
             rowSelection="single",
-            suppressRowClickSelection=False,  # 셀(행) 클릭으로 선택 가능
+            suppressRowClickSelection=False,    # 셀(행) 클릭으로 선택 가능
         )
         grid_options = gb.build()
 
