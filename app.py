@@ -2216,59 +2216,86 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                       unit_label: str,
                       bar_name: str, line_name: str,
                       bar_color: str = "#1E3D6B", line_color: str = "#E5862E"):
-    """막대(금액)+라인(%) 콤보 차트."""
+    """막대(금액) + 라인(%) 콤보 차트 — 상하 subplot 분리 (겹침 방지).
+    v27: 상단 라인 (이익률/성장률) + 하단 바 (금액), 공유 x축.
+         바는 y=0에서 시작 (rangemode=tozero), 두께↑ (bargap=0.65),
+         모든 텍스트/숫자는 검정색 (#000).
+    """
     go = _import_plotly()
     if go is None:
         return None
-    xs_bar = [str(y) for y in sorted_years]
+    try:
+        from plotly.subplots import make_subplots
+    except Exception:
+        return None
+
+    xs = [str(y) for y in sorted_years]
     ys_bar = [to_unit(bar_values_won.get(y), unit_label) for y in sorted_years]
     ys_line = [line_pct.get(y) for y in sorted_years]
     bar_text = [_format_unit_label(v, unit_label) if v is not None else "" for v in ys_bar]
     line_text = [_format_pct_label(v) for v in ys_line]
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=xs_bar, y=ys_bar, name=bar_name,
-        marker_color=bar_color,
-        text=bar_text, textposition="outside",
-        textfont=dict(size=13, color=bar_color),
-        cliponaxis=False,
-        hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
-    ))
+    BLACK = "#000000"
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.30, 0.70],
+        vertical_spacing=0.06,
+    )
+
+    # 상단: 라인 (이익률/성장률 등)
     fig.add_trace(go.Scatter(
-        x=xs_bar, y=ys_line, name=line_name,
+        x=xs, y=ys_line, name=line_name,
         mode="lines+markers+text",
         line=dict(color=line_color, width=2.5),
-        marker=dict(size=9, color=line_color),
+        marker=dict(size=8, color=line_color),
         text=line_text, textposition="top center",
-        textfont=dict(size=12, color=line_color),
-        yaxis="y2",
+        textfont=dict(size=12, color=BLACK),
+        cliponaxis=False,
         hovertemplate=f"%{{x}}<br>{line_name}: %{{text}}<extra></extra>",
-    ))
+    ), row=1, col=1)
+
+    # 하단: 바 (금액)
+    fig.add_trace(go.Bar(
+        x=xs, y=ys_bar, name=bar_name,
+        marker_color=bar_color,
+        text=bar_text, textposition="outside",
+        textfont=dict(size=12, color=BLACK),
+        cliponaxis=False,
+        hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
+    ), row=2, col=1)
+
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
-                   font=dict(size=18, color="#1F2937")),
-        height=460,
+                   font=dict(size=18, color=BLACK)),
+        height=520,
         margin=dict(l=40, r=40, t=80, b=40),
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=1.08, xanchor="center", x=0.5,
-                    bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(showgrid=False, showline=True, linecolor="#1F2937", linewidth=1,
-                   tickfont=dict(size=13)),
-        yaxis=dict(visible=False, showgrid=False, zeroline=False),
-        yaxis2=dict(visible=False, overlaying="y", side="right", showgrid=False, zeroline=False),
-        bargap=0.45,
+                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=12)),
+        bargap=0.65,  # 바 두께 줄이기 (간격 넘으면 바 가느다랑)
+        font=dict(color=BLACK),
     )
+    # 상단 라인 축
+    fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=1, col=1)
+    fig.update_xaxes(visible=False, row=1, col=1)
+    # 하단 바 축 — 바닥이 x축에 닿도록 rangemode="tozero"
+    fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
+                     rangemode="tozero", row=2, col=1)
+    fig.update_xaxes(showgrid=False, showline=True,
+                     linecolor=BLACK, linewidth=1,
+                     tickfont=dict(size=13, color=BLACK), row=2, col=1)
     return fig
 
 
 def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit_label: str):
-    """재무상태 5라인 차트."""
+    """재무상태 5라인 차트. v27: 모든 텍스트 검정색."""
     go = _import_plotly()
     if go is None:
         return None
+    BLACK = "#000000"
     series_def = [
         ("자산총계", "total_assets",      "#1E3D6B"),
         ("현금성자산", "cash_equiv",      "#7DB8E8"),
@@ -2288,21 +2315,22 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
             line=dict(color=color, width=2.5),
             marker=dict(size=9, color=color),
             text=text_labels, textposition="top center",
-            textfont=dict(size=11, color=color),
+            textfont=dict(size=11, color=BLACK),
             hovertemplate=f"%{{x}}<br>{label}: %{{text}} {unit_label}<extra></extra>",
         ))
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
-                   font=dict(size=18, color="#1F2937")),
+                   font=dict(size=18, color=BLACK)),
         height=520,
         margin=dict(l=40, r=40, t=90, b=40),
         plot_bgcolor="white",
         paper_bgcolor="white",
         legend=dict(orientation="h", yanchor="top", y=1.10, xanchor="center", x=0.5,
-                    bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(showgrid=False, showline=True, linecolor="#1F2937", linewidth=1,
-                   tickfont=dict(size=13)),
+                    bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=12)),
+        xaxis=dict(showgrid=False, showline=True, linecolor=BLACK, linewidth=1,
+                   tickfont=dict(size=13, color=BLACK)),
         yaxis=dict(visible=False, showgrid=False, zeroline=False),
+        font=dict(color=BLACK),
     )
     return fig
 
@@ -2427,96 +2455,7 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
 }
 .info-pill.pill-accent .pill-key { color: #9a5a2b; }
 
-/* v26: 표 형식 검색 결과 — st.columns + st.button 조합 */
-/* 표 헤더 — 본문 st.columns gap(1rem)과 동일 */
-.company-table-header {
-    display: flex;
-    gap: 1rem;
-    background: #1E3D6B;
-    color: #ffffff;
-    padding: 10px 1rem;
-    border-radius: 8px 8px 0 0;
-    border: 1px solid #1E3D6B;
-    font-size: 0.85rem;
-    font-weight: 600;
-    box-sizing: border-box;
-    width: 100%;
-    margin-top: 4px;
-}
-.company-table-header > .h-cell {
-    box-sizing: border-box;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-/* st.columns 비율 [2, 1, 1.5, 0.8, 3, 0.9] 와 동일하게 */
-.h-cell-0 { flex: 2 0 0; }
-.h-cell-1 { flex: 1 0 0; }
-.h-cell-2 { flex: 1.5 0 0; }
-.h-cell-3 { flex: 0.8 0 0; }
-.h-cell-4 { flex: 3 0 0; }
-.h-cell-5 { flex: 0.9 0 0; text-align: center; }
-
-/* 표 본문 컨테이너 (st.container key=table_body) */
-div[data-testid="stVerticalBlock"] > div.st-key-table_body {
-    border: 1px solid #d6d6d6;
-    border-top: none;
-    border-radius: 0 0 8px 8px;
-    overflow: hidden;
-    background: #ffffff;
-}
-
-/* 한 행 (st.container key=row_N 또는 row_selected_N) */
-div.st-key-table_body div[class*="st-key-row_"] {
-    background: #ffffff;
-    border-bottom: 1px solid #ececec;
-    transition: background 0.12s ease;
-    padding: 2px 1rem;
-}
-div.st-key-table_body div[class*="st-key-row_"]:hover {
-    background: #FFF8F0;
-}
-/* 선택된 행 강조 — 분홍 배경 + 좌측 빨간 띄 */
-div.st-key-table_body div[class*="st-key-row_selected_"] {
-    background: #FEEFEF !important;
-    box-shadow: inset 4px 0 0 0 #C7383C;
-}
-div.st-key-table_body div[class*="st-key-row_selected_"] p {
-    color: #1E3D6B !important;
-    font-weight: 600;
-}
-
-/* 행 내부 텍스트 */
-div.st-key-table_body div[class*="st-key-row_"] p {
-    margin: 0 !important;
-    font-size: 0.9rem;
-    line-height: 1.4;
-    color: #333;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* 선택 버튼 (행 내부) — 기본은 흰 배경에 빨간 테두리 */
-div.st-key-table_body div[class*="st-key-row_"] button {
-    background: #ffffff !important;
-    border: 1px solid #C7383C !important;
-    color: #C7383C !important;
-    padding: 4px 10px !important;
-    font-size: 0.8rem !important;
-    font-weight: 600 !important;
-    min-height: 32px !important;
-    border-radius: 6px !important;
-}
-div.st-key-table_body div[class*="st-key-row_"] button:hover {
-    background: #FEEFEF !important;
-}
-/* 선택된 행의 버튼 — 꿩한 빨강 */
-div.st-key-table_body div[class*="st-key-row_selected_"] button {
-    background: #C7383C !important;
-    color: #ffffff !important;
-    border-color: #C7383C !important;
-}
+/* v27: 검색 결과 표 — st.dataframe(체크박스 선택) 기본 스타일 유지, 별도 CSS 없음 */
 </style>
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
@@ -2783,11 +2722,12 @@ if search_btn:
         )
         st.stop()
     st.session_state["companies"] = companies
-    # v26: 이전 검색 잔존 상태 초기화 — 새 검색 시 선택 없음 상태(None) 으로 초기화
+    # v27: 이전 검색 잔존 상태 초기화 — 새 검색 시 체크박스 선택 리셋
     st.session_state.pop("auto_extract", None)
     st.session_state.pop("company_table", None)
     st.session_state.pop("company_radio", None)
-    st.session_state["company_select_idx"] = None
+    st.session_state.pop("company_dataframe", None)
+    st.session_state.pop("company_select_idx", None)
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
@@ -2796,64 +2736,43 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    # v26: 표 형식 검색 결과 — st.columns + st.button
-    # 이유: st.dataframe은 Glide canvas 라 선택 자아이콘 제거 불가.
-    # st.radio는 라벨에 HTML escape되어 컬럼 분할 불가.
-    # → 행마다 st.container 내 st.columns + 우측 '선택' 버튼 패턴 (테스트에서 검증됨)
+    # v27: st.dataframe 체크박스 선택 원복
+    # - 컴럼: 회사명, 대표이사, 주소 (사용자 요구 — 기업코드/산업코드 제거)
+    # - 체크박스(좌측 selector)로 행 선택 → selection_mode="single-row"
+    # - 선택 전에는 데이터 추출 버튼 disabled, 선택 후 primary(빨간색)
+    _display_col_map = {
+        "corp_name": "회사명",
+        "ceo_nm": "대표이사",
+        "adres": "주소",
+    }
+    display_cols = [c for c in _display_col_map.keys() if c in companies.columns]
+    if display_cols:
+        df_show = companies[display_cols].rename(columns=_display_col_map)
+    else:
+        df_show = companies
 
-    # 표 헤더
-    st.markdown(
-        """
-        <div class="company-table-header">
-            <div class="h-cell h-cell-0">회사명</div>
-            <div class="h-cell h-cell-1">고유번호</div>
-            <div class="h-cell h-cell-2">대표이사</div>
-            <div class="h-cell h-cell-3">산업코드</div>
-            <div class="h-cell h-cell-4">주소</div>
-            <div class="h-cell h-cell-5">선택</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    event = st.dataframe(
+        df_show,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="company_dataframe",
     )
 
-    # 선택 인덱스 (검색 직후에는 None으로 초기화됨)
-    if "company_select_idx" not in st.session_state:
-        st.session_state["company_select_idx"] = None
-    sel_idx = st.session_state["company_select_idx"]
-    if sel_idx is not None and sel_idx >= len(companies):
-        st.session_state["company_select_idx"] = None
-        sel_idx = None
-
-    _COL_WEIGHTS_TABLE = [2, 1, 1.5, 0.8, 3, 0.9]
-
-    with st.container(key="table_body"):
-        for i in range(len(companies)):
-            is_selected = (sel_idx == i)
-            row_key = f"row_selected_{i}" if is_selected else f"row_{i}"
-            with st.container(key=row_key):
-                cols = st.columns(_COL_WEIGHTS_TABLE, vertical_alignment="center")
-                row = companies.iloc[i]
-                cols[0].markdown(f"**{row.get('corp_name', '?')}**")
-                cols[1].markdown(f"`{row.get('corp_code', '?')}`")
-                ceo = row.get("ceo_nm", "") or "-"
-                cols[2].markdown(ceo)
-                induty = row.get("induty_code", "") or "-"
-                cols[3].markdown(str(induty))
-                adres = row.get("adres", "") or "-"
-                if len(adres) > 40:
-                    adres = adres[:38] + "…"
-                cols[4].markdown(adres)
-                btn_label = "✓ 선택됨" if is_selected else "선택"
-                if cols[5].button(btn_label, key=f"company_select_btn_{i}", use_container_width=True):
-                    st.session_state["company_select_idx"] = i
-                    st.rerun()
-
-    selected_idx = st.session_state["company_select_idx"]
+    # 검색 결과 1건이면 자동 선택 (체크박스 클릭 생략)
+    if len(companies) == 1:
+        selected_idx = 0
+    else:
+        try:
+            sel_rows = event.selection.rows  # type: ignore[attr-defined]
+        except Exception:
+            sel_rows = []
+        selected_idx = sel_rows[0] if sel_rows else None
 
     if selected_idx is None:
-        st.caption("⬆️ 표에서 회사의 '선택' 버튼을 눌러주세요.")
-        # 비활성 데이터 추출 버튼 (구분을 위해 표시만, 클릭 동작 없음)
-        st.button("2️⃣ 데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
+        st.caption("⬆️ 표 좌측 체크박스를 클릭해 회사를 선택하세요.")
+        st.button("데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
         st.stop()
 
     selected_corp = companies.iloc[selected_idx]
@@ -2867,7 +2786,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             "단위는 감사보고서 헤더 기준 자동 감지, 표시 단위는 좌측 사이드바 설정을 따릅니다."
         )
 
-    extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True, key="extract_btn_active")
+    extract_btn = st.button("데이터 추출", type="primary", use_container_width=True, key="extract_btn_active")
 
     # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
     st.session_state.pop("auto_extract", None)
