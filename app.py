@@ -57,6 +57,89 @@ def _df_dash_for_empty(df):
     return out
 
 
+# v34: 통합 재무 표 스타일러 — 정렬 + 0→dash + 합계행 회색 배경
+def _df_style_finance(df, *, zero_to_dash=False, highlight_total_row=False, total_keywords=("합계",)):
+    """재무 표 전용 Styler 생성.
+
+    정렬 규칙:
+      - 첫 컬럼(계정명/단위): 좌측
+      - 나머지 컬럼(연도별 숫자): 우측
+      - 헤더 — 첫 컬럼: 좌측, 나머지(연도): 중앙
+
+    옵션:
+      - zero_to_dash=True: 컬럼[1:] 의 0/N/A/'' → '-' 교체
+      - highlight_total_row=True: total_keywords 중 하나가 포함된 행을 옥은 회색 배경
+    """
+    if df is None or df.empty:
+        return df
+    import re as _re
+    work = df.copy()
+    cols = list(work.columns)
+    if len(cols) < 2:
+        return work
+    first_col = cols[0]
+    other_cols = cols[1:]
+
+    # zero → dash 교체 (첨 컬럼 제외)
+    if zero_to_dash:
+        _zero_pat = _re.compile(r"^\(?0+(?:\.0+)?\)?$")
+        def _conv(v):
+            if v is None:
+                return "-"
+            s = str(v).strip()
+            if s == "" or s.upper() == "N/A":
+                return "-"
+            if _zero_pat.match(s):
+                return "-"
+            return v
+        for c in other_cols:
+            work[c] = work[c].map(_conv)
+
+    try:
+        styler = work.style
+        # 본문 정렬: 첨 컬럼 좌측, 나머지 우측
+        styler = styler.set_properties(subset=[first_col], **{"text-align": "left"})
+        if other_cols:
+            styler = styler.set_properties(subset=other_cols, **{"text-align": "right"})
+
+        # 헤더 정렬 — 컬럼별 개별 적용
+        table_styles = []
+        # 첫 컬럼 헤더 → 좌측
+        try:
+            first_idx = work.columns.get_loc(first_col)
+            table_styles.append({
+                "selector": f"th.col_heading.col{first_idx}",
+                "props": [("text-align", "left")],
+            })
+        except Exception:
+            pass
+        # 나머지(연도) 헤더 → 중앙
+        for c in other_cols:
+            try:
+                idx = work.columns.get_loc(c)
+                table_styles.append({
+                    "selector": f"th.col_heading.col{idx}",
+                    "props": [("text-align", "center")],
+                })
+            except Exception:
+                pass
+        if table_styles:
+            styler = styler.set_table_styles(table_styles, overwrite=False)
+
+        # 합계 행 회색 배경 — apply (행 단위 스타일)
+        if highlight_total_row and total_keywords:
+            def _row_style(row):
+                first_val = str(row.iloc[0]) if len(row) > 0 else ""
+                if any(kw in first_val for kw in total_keywords):
+                    return ["background-color: #EFEFEF; font-weight: 600;"] * len(row)
+                return ["" for _ in row]
+            styler = styler.apply(_row_style, axis=1)
+
+        return styler
+    except Exception:
+        return work
+
+
 # v32: 모든 st.dataframe에 적용 — 숫자 컬럼 우측 정렬 (문자열 콤마 포함)
 def _df_right_align_numbers(df):
     """DataFrame의 숫자적 컬럼(콤마/퍼센트 포함)을 우측 정렬해서 Styler 반환.
@@ -2095,7 +2178,7 @@ def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
                 totals_won[y] += vals[y]
                 any_total[y] = True
 
-    # ----- (2) 주석 분해 cash-like (기타유동금융자산 풀어쓴 항목) -----
+    # ----- (2) v34: 주석 분해 cash-like 항목을 "포함" 헤더 없이 일반 항목과 동일 인덴트로 추가
     cash_like_by_year: Dict[int, Dict[str, float]] = {}
     for y in sorted_years:
         bd = yearly_meta.get(y, {}).get("other_fa_breakdown") or {}
@@ -2110,47 +2193,24 @@ def build_cash_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
                 seen.add(name)
                 all_cash_names.append(name)
 
-    if all_cash_names:
-        rows.append(["[기타금융자산 주석 분해 — 포함]"] + ["" for _ in sorted_years])
-        for name in all_cash_names:
-            row = [f"　{name}"]
-            for y in sorted_years:
-                won_v = cash_like_by_year[y].get(name)
-                row.append(fu(won_v))
-                if won_v is not None:
-                    totals_won[y] += won_v
-                    any_total[y] = True
-            rows.append(row)
+    # v34: [기타금융자산 주석 분해 — 포함] 헤더 삭제, 하위 인덴트 제거
+    for name in all_cash_names:
+        row = [name]  # 인덴트 제거 (이전엔 f"　{name}")
+        for y in sorted_years:
+            won_v = cash_like_by_year[y].get(name)
+            row.append(fu(won_v))
+            if won_v is not None:
+                totals_won[y] += won_v
+                any_total[y] = True
+        rows.append(row)
 
-    # 합계
-    total_row = ["　합계 (현금성자산 후보 총합)"]
+    # 합계 (v34: 인덴트 제거 — styler에서 회색 배경 적용 예정)
+    total_row = ["합계"]
     for y in sorted_years:
         total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
     rows.append(total_row)
 
-    # ----- (3) non_cash_like (참고용, 합계 비포함) -----
-    non_cash_by_year: Dict[int, Dict[str, float]] = {}
-    for y in sorted_years:
-        bd = yearly_meta.get(y, {}).get("other_fa_breakdown") or {}
-        ncl = bd.get("non_cash_like", {}) if isinstance(bd, dict) else {}
-        non_cash_by_year[y] = ncl if isinstance(ncl, dict) else {}
-
-    all_non_cash_names: List[str] = []
-    seen2 = set()
-    for y in sorted_years:
-        for name in non_cash_by_year[y].keys():
-            if name not in seen2:
-                seen2.add(name)
-                all_non_cash_names.append(name)
-
-    if all_non_cash_names:
-        rows.append(["[기타금융자산 주석 분해 — 비포함 · 참고]"] + ["" for _ in sorted_years])
-        for name in all_non_cash_names:
-            row = [f"　{name}"]
-            for y in sorted_years:
-                won_v = non_cash_by_year[y].get(name)
-                row.append(fu(won_v))
-            rows.append(row)
+    # v34: [···비포함 · 참고] 섹션 전체 삭제 (합계 아래 아무것도 안 나오도록)
 
     columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
     return pd.DataFrame(rows, columns=columns)
@@ -2161,7 +2221,7 @@ def build_debt_composition_table(yearly_data: Dict, yearly_meta: Dict, years: Li
     """차입금 구성표 (valuation Gross Debt 가산항 후보)."""
     return _build_composition_table(
         _DEBT_COMPOSITION_ITEMS, yearly_data, yearly_meta, years,
-        total_label="　합계 (총차입금 후보 합)",
+        total_label="합계",  # v34: 인덴트/설명 제거 — styler에서 회색 배경 적용
         unit_label=unit_label,
     )
 
@@ -2205,7 +2265,7 @@ def build_da_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List
                 any_total[y] = True
 
     # 합계 행
-    total_row = ["　합계 (D&A 총합 = EBITDA 가산항)"]
+    total_row = ["합계"]  # v34: 인덴트/설명 제거
     for y in sorted_years:
         total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
     rows.append(total_row)
@@ -2366,6 +2426,21 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         x0=0, x1=1, y0=0, y1=0,
         line=dict(color=BLACK, width=1),
     )
+
+    # v34: 차트 제목을 회색 둘근박스 배지로 표시 (annotation 활용)
+    _title_badge = dict(
+        x=0.5, y=1.12,
+        xref="paper", yref="paper",
+        text=f"<b>{title}</b>",
+        showarrow=False,
+        font=dict(size=16, color="#333333"),
+        bgcolor="#F0F0F0",
+        bordercolor="#F0F0F0",  # 테두리 없는 효과 (bgcolor와 동일)
+        borderwidth=0,
+        borderpad=8,  # 내부 패딩
+        xanchor="center",
+        yanchor="middle",
+    )
     # 연도 레이블 — paper 좌표기준 하단에 균등 배치
     _year_annotations = []
     if xs:
@@ -2385,14 +2460,14 @@ def _make_combo_chart(title: str, sorted_years: List[int],
             ))
 
     fig.update_layout(
-        title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
-                   font=dict(size=18, color=BLACK)),
-        height=480,
-        margin=dict(l=40, r=40, t=90, b=60),  # 연도 annotation 공간 확보
+        # v34: title을 비우고 annotation 배지로 제목 대체
+        title=dict(text="", x=0.5, xanchor="center"),
+        height=520,  # v34: 제목 배지 공간 확보
+        margin=dict(l=40, r=40, t=110, b=60),  # v34: 상단 margin 더 넓게 — 배지 공간
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
-        legend=dict(orientation="h", yanchor="top", y=1.08, xanchor="center", x=0.5,
+        legend=dict(orientation="h", yanchor="top", y=1.03, xanchor="center", x=0.5,
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         bargap=0.325,  # v33: 이전 0.65 → 절반으로 줄임 (x축 항목 간격 축소, 바 폭 더 크게)
         font=dict(color=BLACK, size=FONT_SIZE),
@@ -2414,7 +2489,7 @@ def _make_combo_chart(title: str, sorted_years: List[int],
             fixedrange=True,
         ),
         shapes=[_x_axis_shape],
-        annotations=_year_annotations,
+        annotations=_year_annotations + [_title_badge],  # v34: 회색 제목 배지 추가
     )
     return fig
 
@@ -2448,14 +2523,27 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
             textfont=dict(size=FONT_SIZE, color=BLACK),
             hovertemplate=f"%{{x}}<br>{label}: %{{text}} {unit_label}<extra></extra>",
         ))
+    # v34: 회색 둘근박스 제목 배지 (콤보 차트와 동일 스타일)
+    _title_badge = dict(
+        x=0.5, y=1.10,
+        xref="paper", yref="paper",
+        text=f"<b>{title}</b>",
+        showarrow=False,
+        font=dict(size=16, color="#333333"),
+        bgcolor="#F0F0F0",
+        bordercolor="#F0F0F0",
+        borderwidth=0,
+        borderpad=8,
+        xanchor="center",
+        yanchor="middle",
+    )
     fig.update_layout(
-        title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
-                   font=dict(size=18, color=BLACK)),
-        height=540,
-        margin=dict(l=40, r=40, t=90, b=40),
+        title=dict(text="", x=0.5, xanchor="center"),  # v34: 배지로 대체
+        height=560,  # v34: 배지 공간 확보
+        margin=dict(l=40, r=40, t=110, b=40),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        legend=dict(orientation="h", yanchor="top", y=1.10, xanchor="center", x=0.5,
+        legend=dict(orientation="h", yanchor="top", y=1.02, xanchor="center", x=0.5,
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         xaxis=dict(showgrid=False, showline=True, linecolor=BLACK, linewidth=1,
                    tickfont=dict(size=FONT_SIZE, color=BLACK),
@@ -2463,7 +2551,8 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
         yaxis=dict(visible=False, showgrid=False, zeroline=False,
                    fixedrange=True),
         font=dict(color=BLACK, size=FONT_SIZE),
-        dragmode=False,  # v30: 드래그 비활성화
+        dragmode=False,
+        annotations=[_title_badge],  # v34: 제목 배지
     )
     return fig
 
@@ -2939,10 +3028,12 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             </style>
         """, unsafe_allow_html=True)
 
-        # v32: AgGrid cellStyle/headerClass로 직접 폰트 적용 (CSS 주입 불안정)
+        # v34: 케파일 셀/헤더 둘 다 14px 동일 폰트
         _cell_style_14 = {"font-size": "14px", "line-height": "30px",
                           "padding-left": "8px", "padding-right": "8px",
                           "border-right": "none"}
+        _header_style_14 = {"font-size": "14px", "font-weight": "600",
+                            "padding-left": "8px", "padding-right": "8px"}
 
         gb = GridOptionsBuilder.from_dataframe(df_show_with_idx)
         # 체크박스 없이 셀 클릭만으로 선택
@@ -2953,7 +3044,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             rowMultiSelectWithClick=False,
             suppressRowDeselection=False,
         )
-        # 컬럼 설정 — cellStyle에 폰트 직접 넣음 (CSS 주입 안 되는 경우 대비)
+        # 컬럼 설정 — cellStyle/headerStyle 모두 부여 (v34: 헤더 폰트 통일)
         for _col in ["회사명", "대표이사", "주소"]:
             gb.configure_column(
                 _col,
@@ -2962,74 +3053,110 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                 resizable=True,
                 minWidth=80,
                 cellStyle=_cell_style_14,
+                headerStyle=_header_style_14,
             )
         gb.configure_column("_row_idx", hide=True)
-        # 주소 컬럼: flex=1 제거 — 자동 피팅에 맡김 (이전: 주소가 공간 독점해서 자동피팅이 무효화)
-        gb.configure_column("주소", wrapText=False, autoHeight=False, minWidth=200,
-                            cellStyle=_cell_style_14)
+        # 주소 컬럼: minWidth=200 설정 하지만, JS에서 콘텐츠폭 < container폭일 때 잔여공간 채움
+        gb.configure_column("주소", wrapText=False, autoHeight=False, minWidth=120,
+                            cellStyle=_cell_style_14, headerStyle=_header_style_14)
 
         # v33: 자동피팅 강화 — 이브릿지(결과 소량) vs 삼성전자(결과 다량, 가상스크롤) 둘 다 작동하도록
         # 1. setTimeout 100ms 지연 → 가상 스크롤 셀이 렌더링 완료 후 측정
         # 2. autoSize 후 컬럼 합계 폭 < grid 폭이면 마지막 컬럼(주소)을 남은 공간만큼 늘림
         #    → 표 내부가 테두리보다 좁아지는 현상 해소
         # 3. onGridReady + onFirstDataRendered + onGridSizeChanged 세 훅 이벤트 모두 트리거
+        # v34: 자동피팅 강화 — (1) autoSize → (2) 컬럼 합계 < container 폭일 때 잔여공간을 마지막 컬럼에 채움
+        # 이전 이슈: "한솔오리온텍" 의 주소가 짧음 → minWidth=200이어도 grid 전체 폭보다 작아 테두리에 빈공간 생김
+        # 이 JS가 주소컬럼 폭을 "container폭 - 다른컬럼합" 으로 강제 설정
         _auto_size_js = JsCode("""
         function(params) {
             var doFit = function() {
                 try {
                     var allColumnIds = [];
                     var cols = params.api.getColumns ? params.api.getColumns() : (params.columnApi ? params.columnApi.getAllColumns() : []);
-                    if (!cols) return;
+                    if (!cols || cols.length === 0) return;
                     cols.forEach(function(column) {
                         var cid = column.getColId ? column.getColId() : column.colId;
                         if (cid && cid !== '_row_idx') {
                             allColumnIds.push(cid);
                         }
                     });
+                    if (allColumnIds.length === 0) return;
+
                     // 1단계: 콘텐츠 폭으로 자동 피팅
+                    var didAuto = false;
                     if (params.api.autoSizeColumns) {
-                        params.api.autoSizeColumns(allColumnIds, false);
-                    } else if (params.columnApi && params.columnApi.autoSizeColumns) {
-                        params.columnApi.autoSizeColumns(allColumnIds, false);
+                        try { params.api.autoSizeColumns(allColumnIds, false); didAuto = true; } catch(_) {}
                     }
-                    // 2단계: grid 전체 폭 대비 컬럼 합계를 계산해 부족 공간을 마지막 컬럼에 할당
+                    if (!didAuto && params.columnApi && params.columnApi.autoSizeColumns) {
+                        try { params.columnApi.autoSizeColumns(allColumnIds, false); didAuto = true; } catch(_) {}
+                    }
+
+                    // 2단계: container 전체 폭 측정 — 여러 경로 시도
+                    var gridWidth = 0;
                     try {
-                        var gridEl = (params.api.getGui ? params.api.getGui() : null);
-                        var gridWidth = gridEl ? gridEl.clientWidth : 0;
-                        if (gridWidth > 0 && allColumnIds.length > 0) {
-                            var totalCol = 0;
-                            cols.forEach(function(column) {
-                                var cid = column.getColId ? column.getColId() : column.colId;
-                                if (cid && cid !== '_row_idx') {
-                                    totalCol += (column.getActualWidth ? column.getActualWidth() : 0);
+                        if (params.api.getGui) {
+                            var gridEl = params.api.getGui();
+                            if (gridEl) {
+                                // gridEl 자체 또는 부모 중 .ag-root-wrapper
+                                gridWidth = gridEl.clientWidth || 0;
+                                if (!gridWidth) {
+                                    var rootWrap = gridEl.querySelector ? gridEl.querySelector('.ag-root-wrapper') : null;
+                                    if (rootWrap) gridWidth = rootWrap.clientWidth || 0;
                                 }
-                            });
-                            // 세로 스크롤바 공간 약 18px 보정
-                            var available = gridWidth - 20;
-                            if (totalCol < available) {
-                                var lastColId = allColumnIds[allColumnIds.length - 1];
-                                var lastCol = null;
-                                cols.forEach(function(column) {
-                                    var cid = column.getColId ? column.getColId() : column.colId;
-                                    if (cid === lastColId) lastCol = column;
-                                });
-                                if (lastCol) {
-                                    var lastW = lastCol.getActualWidth ? lastCol.getActualWidth() : 0;
-                                    var newLastW = lastW + (available - totalCol);
-                                    if (params.api.setColumnWidth) {
-                                        params.api.setColumnWidth(lastColId, newLastW);
-                                    } else if (params.columnApi && params.columnApi.setColumnWidth) {
-                                        params.columnApi.setColumnWidth(lastColId, newLastW);
-                                    }
+                                if (!gridWidth && gridEl.parentElement) {
+                                    gridWidth = gridEl.parentElement.clientWidth || 0;
                                 }
                             }
                         }
-                    } catch(e2) { /* fill-remaining error ignored */ }
+                    } catch(_) {}
+
+                    if (gridWidth <= 0) return;
+
+                    // 컬럼 실제 폭 합계 계산
+                    var widthMap = {};
+                    var totalCol = 0;
+                    cols.forEach(function(column) {
+                        var cid = column.getColId ? column.getColId() : column.colId;
+                        if (cid && cid !== '_row_idx') {
+                            var w = column.getActualWidth ? column.getActualWidth() : 0;
+                            widthMap[cid] = w;
+                            totalCol += w;
+                        }
+                    });
+
+                    // 세로 스크롤바 공간 보정 (일반 ~17px) + 안전 마진
+                    var available = gridWidth - 2;  // grid 테두리 1px×2
+
+                    // 콘텐츠 좀아 → 마지막 컬럼(주소)을 잔여공간만큼 늘림
+                    if (totalCol < available) {
+                        var lastColId = allColumnIds[allColumnIds.length - 1];
+                        var lastW = widthMap[lastColId] || 0;
+                        var newLastW = lastW + (available - totalCol);
+                        // 신버전 setColumnWidth
+                        var done = false;
+                        if (params.api.setColumnWidth) {
+                            try { params.api.setColumnWidth(lastColId, newLastW); done = true; } catch(_) {}
+                        }
+                        if (!done && params.columnApi && params.columnApi.setColumnWidth) {
+                            try { params.columnApi.setColumnWidth(lastColId, newLastW); done = true; } catch(_) {}
+                        }
+                        // 폴백: applyColumnState (최신버전 API)
+                        if (!done && params.api.applyColumnState) {
+                            try {
+                                params.api.applyColumnState({
+                                    state: [{ colId: lastColId, width: newLastW }],
+                                    applyOrder: false,
+                                });
+                            } catch(_) {}
+                        }
+                    }
                 } catch(e) { console.log('autoSize error', e); }
             };
-            // 가상 스크롤 셀 렌더링 완료 대기 (삼성전자 같은 대량 결과 대응)
+            // 세 시점 각각 호출 — 소량/대량 점을 모두 커버
             setTimeout(doFit, 50);
-            setTimeout(doFit, 200);  // 이중 시도: 첫 호출이 가상화 이전이면 200ms 뒤 재호출
+            setTimeout(doFit, 250);
+            setTimeout(doFit, 600);  // v34: 가상 스크롤 초기화 완전 대기 (삼성전자 같은 대량 수천 건)
         }
         """)
         gb.configure_grid_options(
@@ -3197,8 +3324,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
         _tpl_height = 38 + 35 * max(len(template_df), 1)  # 헤더 38 + 행당 35
+        # v34: 정렬(계정명 좌, 연도 중앙헤더/우측숫자) + 0→dash 적용
         st.dataframe(
-            _df_right_align_numbers(template_df),
+            _df_style_finance(template_df, zero_to_dash=True),
             use_container_width=True, hide_index=True,
             height=_tpl_height,
         )
@@ -3240,29 +3368,37 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         debt_comp_df = build_debt_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
         da_comp_df = build_da_composition_table(yearly_data, yearly_meta, years, unit_label=unit_label)
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
-            _h = 38 + 35 * max(len(cash_comp_df), 1)
-            st.dataframe(_df_right_align_numbers(_df_dash_for_empty(cash_comp_df)), use_container_width=True, hide_index=True, height=_h)
-            st.caption(
-                "· 요약표 '현금성자산' = 이 구성표 합계.\n"
-                "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
-                "· 사용제한·담보 항목 존재 가능 → valuation 시 차감항 조정 필요."
-            )
-        with col_b:
-            st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
-            _h = 38 + 35 * max(len(debt_comp_df), 1)
-            st.dataframe(_df_right_align_numbers(_df_dash_for_empty(debt_comp_df)), use_container_width=True, hide_index=True, height=_h)
-            st.caption(
-                "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
-                "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
-            )
+        # v34: 좌우 2컬럼 배치 제거 — 현금성자산 → 차입금 → D&A 수직 배치
+        st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
+        _h = 38 + 35 * max(len(cash_comp_df), 1)
+        st.dataframe(
+            _df_style_finance(cash_comp_df, zero_to_dash=True, highlight_total_row=True),
+            use_container_width=True, hide_index=True, height=_h,
+        )
+        st.caption(
+            "· 요약표 '현금성자산' = 이 구성표 합계.\n"
+            "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
+            "· 사용제한·담보 항목 존재 가능 → valuation 시 차감항 조정 필요."
+        )
 
-        # -------- D&A 구성표 (차입금 구성 하단) --------
+        st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
+        _h = 38 + 35 * max(len(debt_comp_df), 1)
+        st.dataframe(
+            _df_style_finance(debt_comp_df, zero_to_dash=True, highlight_total_row=True),
+            use_container_width=True, hide_index=True, height=_h,
+        )
+        st.caption(
+            "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
+            "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
+        )
+
+        # -------- D&A 구성표 --------
         st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
         _h = 38 + 35 * max(len(da_comp_df), 1)
-        st.dataframe(_df_right_align_numbers(_df_dash_for_empty(da_comp_df)), use_container_width=True, hide_index=True, height=_h)
+        st.dataframe(
+            _df_style_finance(da_comp_df, zero_to_dash=True, highlight_total_row=True),
+            use_container_width=True, hide_index=True, height=_h,
+        )
         st.caption(
                 "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
                 "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
