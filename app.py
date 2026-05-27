@@ -2648,24 +2648,29 @@ def search_companies(_dart, _api_key: str, query: str) -> pd.DataFrame:
 # ====================================================================
 
 # ----- 본문 상단: 기업 검색 영역 -----
-st.markdown("<div class='hpe-section'>🔎 기업 검색</div>", unsafe_allow_html=True)
+# v21: 엔터 키 입력 시 자동 검색 + 검색 결과 1건이면 자동 데이터 추출
+st.markdown("<div class='hpe-section'>🔎 기업 검색 (엔터로 자동 실행)</div>", unsafe_allow_html=True)
 
-search_col1, search_col2, search_col3 = st.columns([5, 1.2, 1.2])
-with search_col1:
-    company_input = st.text_input(
-        "회사명 또는 고유번호",
-        placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885",
-        label_visibility="collapsed",
-        key="company_input",
-    )
-with search_col2:
-    search_btn = st.button("🔍 검색", use_container_width=True, type="primary")
-with search_col3:
-    refresh_cache_btn = st.button(
-        "🔄 캐시",
-        help="사명이 업데이트 안될 때 눌러 corp_code.xml 재다운로드",
-        use_container_width=True,
-    )
+# 검색 영역 — st.form으로 감싸 엔터 입력 시 자동 submit
+with st.form(key="search_form", clear_on_submit=False):
+    fcol1, fcol2 = st.columns([6, 1.2])
+    with fcol1:
+        company_input = st.text_input(
+            "회사명 또는 고유번호",
+            placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885 (엔터로 검색)",
+            label_visibility="collapsed",
+            key="company_input",
+        )
+    with fcol2:
+        search_btn = st.form_submit_button(
+            "🔍 검색", use_container_width=True, type="primary"
+        )
+
+# 캐시 새로고침은 폼 밖에 (폼 submit과 분리)
+refresh_cache_btn = st.button(
+    "🔄 캐시 새로고침",
+    help="사명이 업데이트 안될 때 눌러 corp_code.xml 재다운로드",
+)
 
 # 캐시 새로고침 (함수 정의 이후에서 처리)
 if refresh_cache_btn:
@@ -2673,6 +2678,7 @@ if refresh_cache_btn:
     search_companies.clear()
     st.success("캐시를 비웠습니다. 다시 검색해주세요.")
 
+# 입력값 변경 자동 감지 (엔터 외에도 동작) — 단, 매번 자동 검색은 비효율이라 form submit만 사용
 if search_btn:
     if not company_input.strip():
         st.warning("회사명 또는 코드를 입력하세요.")
@@ -2682,10 +2688,15 @@ if search_btn:
     if companies.empty:
         st.error(
             f"'{company_input}'에 해당하는 회사를 찾을 수 없습니다.\n\n"
-            "💡 사명이 최근 변경된 경우 우측 '🔄 캐시' 버튼을 눌러보세요."
+            "💡 사명이 최근 변경된 경우 위쪽 '🔄 캐시 새로고침' 버튼을 눌러보세요."
         )
         st.stop()
     st.session_state["companies"] = companies
+    # v21: 검색 결과 1건이면 데이터 추출까지 자동 트리거
+    if len(companies) == 1:
+        st.session_state["auto_extract"] = True
+    else:
+        st.session_state["auto_extract"] = False
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
@@ -2734,7 +2745,10 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True)
 
-    if extract_btn:
+    # v21: 검색 결과 1건이면 자동 실행 — 자동 실행 후 플래그 해제 (재실행 방지)
+    auto_extract = st.session_state.pop("auto_extract", False)
+
+    if extract_btn or auto_extract:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
