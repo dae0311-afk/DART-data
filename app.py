@@ -2680,38 +2680,76 @@ section[data-testid="stSidebar"] h3 {
 }
 section[data-testid="stSidebar"] hr { margin: 8px 0; }
 
-/* 사이드바 라디오 - 가로 토글 형태 */
+/* 사이드바 옵션 라벨 (재무제표 구분 / 조회 기간 / 표시 단위) */
+section[data-testid="stSidebar"] .opt-label {
+    font-size: 0.92rem;
+    color: #1f2937;
+    margin: 14px 0 6px 0;
+    font-weight: 500;
+}
+section[data-testid="stSidebar"] .opt-caption {
+    font-size: 0.82rem;
+    color: #9aa3af;
+    margin-top: 14px;
+}
+
+/* 사이드바 라디오 - 가로 세그먼트 토글 (이미지와 동일) */
 section[data-testid="stSidebar"] div[role="radiogroup"] {
-    gap: 6px;
-    flex-wrap: wrap;
+    gap: 6px !important;
+    flex-wrap: nowrap !important;
+    flex-direction: row !important;
+    display: flex !important;
 }
 section[data-testid="stSidebar"] div[role="radiogroup"] > label {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 8px 10px;
-    border: 1px solid #d6d6d6;
-    border-radius: 8px;
-    background: #ffffff;
-    cursor: pointer;
-    text-align: center;
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    padding: 9px 6px !important;
+    border: 1px solid #d6d6d6 !important;
+    border-radius: 10px !important;
+    background: #ffffff !important;
+    cursor: pointer !important;
+    text-align: center !important;
     margin: 0 !important;
-    transition: all 0.15s ease;
+    transition: all 0.15s ease !important;
+    box-shadow: none !important;
+    position: relative;
 }
 section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
-    border-color: #E5862E;
+    border-color: #E5862E !important;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label[data-checked="true"],
 section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
-    border: 2px solid #C7383C;
-    background: #FEEFEF;
-    font-weight: 600;
+    border: 1.5px solid #C7383C !important;
+    background: #FEEFEF !important;
+    color: #C7383C !important;
+    font-weight: 600 !important;
 }
-/* 라디오 동그라미 숨김 - 라벨만 표시 */
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
-    display: none;
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p,
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) div {
+    color: #C7383C !important;
+    font-weight: 600 !important;
+}
+/* 라디오 동그라미/인풋 완전 숨김 */
+section[data-testid="stSidebar"] div[role="radiogroup"] input,
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child,
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > span:first-child,
+section[data-testid="stSidebar"] div[role="radiogroup"] [data-testid="stMarkdownContainer"] ~ div,
+section[data-testid="stSidebar"] div[role="radiogroup"] svg {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    position: absolute !important;
+    pointer-events: none !important;
 }
 section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
-    width: 100%;
+    width: 100% !important;
+    margin: 0 !important;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label p {
+    font-size: 0.92rem !important;
+    margin: 0 !important;
+    text-align: center !important;
+    width: 100% !important;
 }
 
 /* 본문 헤더 둥근 박스 (info-pill) */
@@ -2760,7 +2798,7 @@ st.markdown(_UI_CSS, unsafe_allow_html=True)
 # ----- 좌측 사이드바: 조회 옵션 (토글 3그룹) -----
 st.sidebar.markdown("### ⚙️ 조회 옵션")
 
-st.sidebar.markdown("**재무제표 구분**")
+st.sidebar.markdown('<div class="opt-label">재무제표 구분</div>', unsafe_allow_html=True)
 fs_label = st.sidebar.radio(
     "재무제표 구분",
     ["연결", "별도"],
@@ -2771,7 +2809,7 @@ fs_label = st.sidebar.radio(
 )
 fs_div_target = "CFS" if fs_label == "연결" else "OFS"
 
-st.sidebar.markdown("**조회 기간**")
+st.sidebar.markdown('<div class="opt-label">조회 기간</div>', unsafe_allow_html=True)
 period_label = st.sidebar.radio(
     "조회 기간",
     ["5년", "10년", "20년", "최대"],
@@ -2782,7 +2820,7 @@ period_label = st.sidebar.radio(
 )
 period_map = {"5년": 5, "10년": 10, "20년": 20, "최대": 99}
 
-st.sidebar.markdown("**표시 단위**")
+st.sidebar.markdown('<div class="opt-label">표시 단위</div>', unsafe_allow_html=True)
 unit_label = st.sidebar.radio(
     "표시 단위",
     ["백만원", "억원", "십억원"],
@@ -2792,7 +2830,10 @@ unit_label = st.sidebar.radio(
     key="unit_radio",
 )
 
-st.sidebar.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
+st.sidebar.markdown(
+    '<div class="opt-caption">옵션을 바꾸면 결과가 즉시 갱신됩니다.</div>',
+    unsafe_allow_html=True,
+)
 
 current_year = datetime.now().year
 end_year = current_year - 1  # 종료연도는 직전 회계연도 자동 고정
