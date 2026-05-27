@@ -2692,11 +2692,10 @@ if search_btn:
         )
         st.stop()
     st.session_state["companies"] = companies
-    # v21: 검색 결과 1건이면 데이터 추출까지 자동 트리거
-    if len(companies) == 1:
-        st.session_state["auto_extract"] = True
-    else:
-        st.session_state["auto_extract"] = False
+    # v23: 자동 추출 플래그 제거 — 항상 표 클릭 + 데이터 추출 버튼으로만 진행
+    st.session_state.pop("auto_extract", None)
+    # 이전 검색에서 선택된 행 상태 초기화 (다른 회사 검색 시 잘못된 자동선택 방지)
+    st.session_state.pop("company_table", None)
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
@@ -2705,7 +2704,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    # v22: 검색 결과 표는 5개 컬럼만 표시 (회사명/회사코드/대표이사/주소/산업코드)
+    # v23: 검색 결과 표에서 행 클릭으로 직접 선택 (selectbox 통합 제거)
     _display_col_map = {
         "corp_name": "회사명",
         "corp_code": "회사코드",
@@ -2718,22 +2717,35 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         df_show = companies[display_cols].rename(columns=_display_col_map)
     else:
         df_show = companies
-    st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-    options = []
-    for _, row in companies.iterrows():
-        label = f"{row.get('corp_name', '?')} (고유: {row.get('corp_code', '?')}"
-        if row.get("stock_code") and str(row.get("stock_code")).strip():
-            label += f", 종목: {row.get('stock_code')}"
-        label += f", 구분: {row.get('corp_cls', '?')})"
-        options.append(label)
-
-    selected_idx = st.selectbox(
-        "조회할 회사 선택",
-        options=range(len(options)),
-        format_func=lambda i: options[i],
-        key="company_select",
+    st.caption("↓ 조회할 회사를 표에서 클릭해 선택하세요")
+    df_event = st.dataframe(
+        df_show,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="company_table",
     )
+
+    # 행 선택 추출 — 선택 이력 없으면 검색 결과 1건일 때만 자동 선택, 아니면 대기
+    selected_rows = []
+    try:
+        selected_rows = df_event.selection.rows  # type: ignore[attr-defined]
+    except Exception:
+        selected_rows = []
+
+    if not selected_rows and len(companies) == 1:
+        selected_idx = 0
+    elif selected_rows:
+        selected_idx = int(selected_rows[0])
+    else:
+        selected_idx = None
+
+    if selected_idx is None:
+        st.info("표에서 회사를 선택하면 아래에 데이터 추출 버튼이 활성화됩니다.")
+        st.stop()
+
     selected_corp = companies.iloc[selected_idx]
     corp_code = selected_corp.get("corp_code")
     corp_cls = selected_corp.get("corp_cls", "")
@@ -2752,10 +2764,10 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True)
 
-    # v21: 검색 결과 1건이면 자동 실행 — 자동 실행 후 플래그 해제 (재실행 방지)
-    auto_extract = st.session_state.pop("auto_extract", False)
+    # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
+    st.session_state.pop("auto_extract", None)
 
-    if extract_btn or auto_extract:
+    if extract_btn:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
