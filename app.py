@@ -2426,6 +2426,27 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
     color: #C7383C;
 }
 .info-pill.pill-accent .pill-key { color: #9a5a2b; }
+
+/* v24: 검색 결과 표 — 좌측 체크박스 숨김 + 행 클릭 선택 강조 */
+/* 1) 체크박스 input 자체만 시각적 숨김 (셀 레이아웃은 유지 → 일반 데이터 컬럼에 영향 없음) */
+div[data-testid="stDataFrame"] input[type="checkbox"] {
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    margin: 0;
+}
+/* 2) 행 호버 강조 + 커서 변경 */
+div[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"] {
+    background-color: #FEEFEF !important;
+    cursor: pointer;
+}
+/* 3) 선택된 행 강조 (Streamlit은 selected row에 aria-selected="true" 부여) */
+div[data-testid="stDataFrame"] [role="row"][aria-selected="true"] [role="gridcell"],
+div[data-testid="stDataFrame"] [role="row"].selected [role="gridcell"] {
+    background-color: #C7383C !important;
+    color: #ffffff !important;
+    font-weight: 600;
+}
 </style>
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
@@ -2718,7 +2739,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     else:
         df_show = companies
 
-    st.caption("↓ 조회할 회사를 표에서 클릭해 선택하세요")
+    st.caption("표에서 회사명이 있는 행을 클릭하면 선택됩니다 (선택 시 행이 붉은색으로 강조)")
     df_event = st.dataframe(
         df_show,
         use_container_width=True,
@@ -2751,10 +2772,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     corp_cls = selected_corp.get("corp_cls", "")
     corp_name = selected_corp.get("corp_name", "")
 
-    st.info(
-        f"선택: **{corp_name}** | 고유번호 `{corp_code}` | "
-        f"법인구분 `{corp_cls}` (Y=유가, K=코스닥, N=코넥스, E=외감)"
-    )
+    # v24: 선택 안내 박스(st.info) 제거 — 표 행 강조로 선택 상태 구분
 
     if corp_cls == "E":
         st.warning(
