@@ -2427,65 +2427,95 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
 }
 .info-pill.pill-accent .pill-key { color: #9a5a2b; }
 
-/* v25: 본문 검색 결과 라디오 카드 — key=company_radio 직접 타겟 */
-/* 참고: Streamlit의 stMain은 <section> 태그이므로 div[data-testid=stMain] 은 미매치. */
-div.st-key-company_radio div[role="radiogroup"],
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 8px !important;
-    margin-top: 4px !important;
+/* v26: 표 형식 검색 결과 — st.columns + st.button 조합 */
+/* 표 헤더 — 본문 st.columns gap(1rem)과 동일 */
+.company-table-header {
+    display: flex;
+    gap: 1rem;
+    background: #1E3D6B;
+    color: #ffffff;
+    padding: 10px 1rem;
+    border-radius: 8px 8px 0 0;
+    border: 1px solid #1E3D6B;
+    font-size: 0.85rem;
+    font-weight: 600;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 4px;
 }
-div.st-key-company_radio div[role="radiogroup"] > label,
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label {
-    display: flex !important;
-    align-items: flex-start !important;
-    width: 100% !important;
-    padding: 12px 14px !important;
-    border: 1px solid #d6d6d6 !important;
-    border-radius: 8px !important;
-    background: #ffffff !important;
-    cursor: pointer !important;
-    margin: 0 !important;
-    transition: all 0.15s ease !important;
-    white-space: pre-line !important;
-    font-size: 0.92rem !important;
-    line-height: 1.45 !important;
-    box-sizing: border-box !important;
+.company-table-header > .h-cell {
+    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-div.st-key-company_radio div[role="radiogroup"] > label:hover,
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label:hover {
-    border-color: #E5862E !important;
-    background: #FFF8F0 !important;
+/* st.columns 비율 [2, 1, 1.5, 0.8, 3, 0.9] 와 동일하게 */
+.h-cell-0 { flex: 2 0 0; }
+.h-cell-1 { flex: 1 0 0; }
+.h-cell-2 { flex: 1.5 0 0; }
+.h-cell-3 { flex: 0.8 0 0; }
+.h-cell-4 { flex: 3 0 0; }
+.h-cell-5 { flex: 0.9 0 0; text-align: center; }
+
+/* 표 본문 컨테이너 (st.container key=table_body) */
+div[data-testid="stVerticalBlock"] > div.st-key-table_body {
+    border: 1px solid #d6d6d6;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+    background: #ffffff;
 }
-/* 선택 카드 강조 (클릭으로 선택된 항목) */
-div.st-key-company_radio div[role="radiogroup"] > label:has(input:checked),
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label:has(input:checked) {
-    border: 2px solid #C7383C !important;
+
+/* 한 행 (st.container key=row_N 또는 row_selected_N) */
+div.st-key-table_body div[class*="st-key-row_"] {
+    background: #ffffff;
+    border-bottom: 1px solid #ececec;
+    transition: background 0.12s ease;
+    padding: 2px 1rem;
+}
+div.st-key-table_body div[class*="st-key-row_"]:hover {
+    background: #FFF8F0;
+}
+/* 선택된 행 강조 — 분홍 배경 + 좌측 빨간 띄 */
+div.st-key-table_body div[class*="st-key-row_selected_"] {
     background: #FEEFEF !important;
-    font-weight: 600 !important;
+    box-shadow: inset 4px 0 0 0 #C7383C;
+}
+div.st-key-table_body div[class*="st-key-row_selected_"] p {
     color: #1E3D6B !important;
-    padding: 11px 13px !important; /* 보더 1px → 2px 보정 */
+    font-weight: 600;
 }
-/* 라디오 동그라미 숨김 (라벨의 첫 자식 div) */
-div.st-key-company_radio div[role="radiogroup"] > label > div:first-child,
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child {
-    display: none !important;
+
+/* 행 내부 텍스트 */
+div.st-key-table_body div[class*="st-key-row_"] p {
+    margin: 0 !important;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    color: #333;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-/* 라벨 안의 input 자체도 화면에서 숨김 (클릭은 label이 처리) */
-div.st-key-company_radio div[role="radiogroup"] > label > input[type="radio"],
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label > input[type="radio"] {
-    position: absolute !important;
-    opacity: 0 !important;
-    width: 0 !important;
-    height: 0 !important;
-    pointer-events: none !important;
+
+/* 선택 버튼 (행 내부) — 기본은 흰 배경에 빨간 테두리 */
+div.st-key-table_body div[class*="st-key-row_"] button {
+    background: #ffffff !important;
+    border: 1px solid #C7383C !important;
+    color: #C7383C !important;
+    padding: 4px 10px !important;
+    font-size: 0.8rem !important;
+    font-weight: 600 !important;
+    min-height: 32px !important;
+    border-radius: 6px !important;
 }
-/* 텍스트 영역 가로 확장 */
-div.st-key-company_radio div[role="radiogroup"] > label > div:last-child,
-section[data-testid="stMain"] div[data-testid="stRadio"] div[role="radiogroup"] > label > div:last-child {
-    flex: 1 1 auto !important;
-    width: 100% !important;
+div.st-key-table_body div[class*="st-key-row_"] button:hover {
+    background: #FEEFEF !important;
+}
+/* 선택된 행의 버튼 — 꿩한 빨강 */
+div.st-key-table_body div[class*="st-key-row_selected_"] button {
+    background: #C7383C !important;
+    color: #ffffff !important;
+    border-color: #C7383C !important;
 }
 </style>
 """
@@ -2718,7 +2748,7 @@ with st.form(key="search_form", clear_on_submit=False):
     with fcol1:
         company_input = st.text_input(
             "회사명 또는 고유번호",
-            placeholder="예: 삼성전자 / 005930 / 이브릿지 / 01178885 (엔터로 검색)",
+            placeholder="회사명을 입력하세요",
             label_visibility="collapsed",
             key="company_input",
         )
@@ -2753,11 +2783,11 @@ if search_btn:
         )
         st.stop()
     st.session_state["companies"] = companies
-    # v25: 이전 검색 잔존 상태 초기화 — 다른 회사 검색 시 0번 항목이 기본 선택으로 초기화됨
+    # v26: 이전 검색 잔존 상태 초기화 — 새 검색 시 선택 없음 상태(None) 으로 초기화
     st.session_state.pop("auto_extract", None)
     st.session_state.pop("company_table", None)
     st.session_state.pop("company_radio", None)
-    st.session_state["company_select_idx"] = 0
+    st.session_state["company_select_idx"] = None
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
@@ -2766,52 +2796,65 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    # v25: 공식 표 대신 st.radio 기반 카드 UI
-    # 이유: st.dataframe은 Glide Data Grid(canvas 렌더링)라 좌측 selector 컬럼을 CSS로 숨길 수 없음.
-    # 라디오 동그라미는 이미 CSS로 숨김 처리 (사이드바와 동일 패턴), 선택 시 라벨에 붉은색 적용.
-    # 행 클릭 = 라벨 클릭으로 수용 → 즉시 선택 + Streamlit rerun 자동.
+    # v26: 표 형식 검색 결과 — st.columns + st.button
+    # 이유: st.dataframe은 Glide canvas 라 선택 자아이콘 제거 불가.
+    # st.radio는 라벨에 HTML escape되어 컬럼 분할 불가.
+    # → 행마다 st.container 내 st.columns + 우측 '선택' 버튼 패턴 (테스트에서 검증됨)
 
-    def _fmt_company_row(i: int) -> str:
-        row = companies.iloc[i]
-        parts = []
-        parts.append(f"<b>{row.get('corp_name', '?')}</b>")
-        parts.append(f"<span class='cc-code'>{row.get('corp_code', '?')}</span>")
-        ceo = row.get("ceo_nm", "") or "-"
-        adres = row.get("adres", "") or "-"
-        induty = row.get("induty_code", "") or "-"
-        meta = f"대표 {ceo} · 산업코드 {induty} · {adres}"
-        return " ".join(parts) + f"<br><span class='cc-meta'>{meta}</span>"
-
-    # HTML 렌더링은 st.radio 라벨 텍스트에 HTML을 직접 넣을 수 없으므로
-    # plaintext 포맷으로 제공 (CSS 강조는 선택 상태로 처리)
-    def _fmt_company_label(i: int) -> str:
-        row = companies.iloc[i]
-        name = row.get("corp_name", "?")
-        code = row.get("corp_code", "?")
-        ceo = (row.get("ceo_nm", "") or "-")
-        adres = (row.get("adres", "") or "-")
-        induty = (row.get("induty_code", "") or "-")
-        # 주소는 너무 길면 절삭
-        if len(adres) > 50:
-            adres = adres[:48] + "…"
-        return f"{name}  ·  〔{code}〕  ·  대표 {ceo}  ·  산업 {induty}\n{adres}"
-
-    st.caption("아래 목록에서 회사를 선택하세요. 선택한 항목은 붉은색으로 강조되며, 아래에 자동으로 '데이터 추출' 버튼이 나타납니다.")
-
-    # 이전 선택 인덱스 재사용 (재실행 간 유지)
-    default_idx = st.session_state.get("company_select_idx", 0)
-    if default_idx >= len(companies):
-        default_idx = 0
-
-    selected_idx = st.radio(
-        label="회사 선택",
-        options=list(range(len(companies))),
-        format_func=_fmt_company_label,
-        index=default_idx,
-        label_visibility="collapsed",
-        key="company_radio",
+    # 표 헤더
+    st.markdown(
+        """
+        <div class="company-table-header">
+            <div class="h-cell h-cell-0">회사명</div>
+            <div class="h-cell h-cell-1">고유번호</div>
+            <div class="h-cell h-cell-2">대표이사</div>
+            <div class="h-cell h-cell-3">산업코드</div>
+            <div class="h-cell h-cell-4">주소</div>
+            <div class="h-cell h-cell-5">선택</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.session_state["company_select_idx"] = selected_idx
+
+    # 선택 인덱스 (검색 직후에는 None으로 초기화됨)
+    if "company_select_idx" not in st.session_state:
+        st.session_state["company_select_idx"] = None
+    sel_idx = st.session_state["company_select_idx"]
+    if sel_idx is not None and sel_idx >= len(companies):
+        st.session_state["company_select_idx"] = None
+        sel_idx = None
+
+    _COL_WEIGHTS_TABLE = [2, 1, 1.5, 0.8, 3, 0.9]
+
+    with st.container(key="table_body"):
+        for i in range(len(companies)):
+            is_selected = (sel_idx == i)
+            row_key = f"row_selected_{i}" if is_selected else f"row_{i}"
+            with st.container(key=row_key):
+                cols = st.columns(_COL_WEIGHTS_TABLE, vertical_alignment="center")
+                row = companies.iloc[i]
+                cols[0].markdown(f"**{row.get('corp_name', '?')}**")
+                cols[1].markdown(f"`{row.get('corp_code', '?')}`")
+                ceo = row.get("ceo_nm", "") or "-"
+                cols[2].markdown(ceo)
+                induty = row.get("induty_code", "") or "-"
+                cols[3].markdown(str(induty))
+                adres = row.get("adres", "") or "-"
+                if len(adres) > 40:
+                    adres = adres[:38] + "…"
+                cols[4].markdown(adres)
+                btn_label = "✓ 선택됨" if is_selected else "선택"
+                if cols[5].button(btn_label, key=f"company_select_btn_{i}", use_container_width=True):
+                    st.session_state["company_select_idx"] = i
+                    st.rerun()
+
+    selected_idx = st.session_state["company_select_idx"]
+
+    if selected_idx is None:
+        st.caption("⬆️ 표에서 회사의 '선택' 버튼을 눌러주세요.")
+        # 비활성 데이터 추출 버튼 (구분을 위해 표시만, 클릭 동작 없음)
+        st.button("2️⃣ 데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
+        st.stop()
 
     selected_corp = companies.iloc[selected_idx]
     corp_code = selected_corp.get("corp_code")
@@ -2824,7 +2867,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             "단위는 감사보고서 헤더 기준 자동 감지, 표시 단위는 좌측 사이드바 설정을 따릅니다."
         )
 
-    extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True)
+    extract_btn = st.button("2️⃣ 데이터 추출", type="primary", use_container_width=True, key="extract_btn_active")
 
     # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
     st.session_state.pop("auto_extract", None)
