@@ -2795,45 +2795,29 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label p {
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
 
-# ----- 좌측 사이드바: 조회 옵션 (토글 3그룹) -----
-st.sidebar.markdown("### ⚙️ 조회 옵션")
+# ----- 좌측 사이드바: 조회 옵션 (segmented_control) -----
+with st.sidebar:
+    st.header("⚙️ 조회 옵션")
+    fs_label = st.segmented_control(
+        "재무제표 구분", options=["연결", "별도"], default="연결", key="fs_seg",
+    )
+    fs_div_target = "CFS" if fs_label == "연결" else "OFS"
 
-st.sidebar.markdown('<div class="opt-label">재무제표 구분</div>', unsafe_allow_html=True)
-fs_label = st.sidebar.radio(
-    "재무제표 구분",
-    ["연결", "별도"],
-    index=0,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="fs_radio",
-)
-fs_div_target = "CFS" if fs_label == "연결" else "OFS"
+    period_val = st.segmented_control(
+        "조회 기간",
+        options=[5, 10, 20, "최대"],
+        format_func=lambda x: (f"{x}년" if isinstance(x, int) else x),
+        default=5,
+        key="period_seg",
+    )
+    period_label = f"{period_val}년" if isinstance(period_val, int) else period_val
+    period_map = {"5년": 5, "10년": 10, "20년": 20, "최대": 99}
 
-st.sidebar.markdown('<div class="opt-label">조회 기간</div>', unsafe_allow_html=True)
-period_label = st.sidebar.radio(
-    "조회 기간",
-    ["5년", "10년", "20년", "최대"],
-    index=0,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="period_radio",
-)
-period_map = {"5년": 5, "10년": 10, "20년": 20, "최대": 99}
+    unit_label = st.segmented_control(
+        "표시 단위", options=["백만원", "억원", "십억원"], default="억원", key="unit_seg",
+    )
 
-st.sidebar.markdown('<div class="opt-label">표시 단위</div>', unsafe_allow_html=True)
-unit_label = st.sidebar.radio(
-    "표시 단위",
-    ["백만원", "억원", "십억원"],
-    index=1,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="unit_radio",
-)
-
-st.sidebar.markdown(
-    '<div class="opt-caption">옵션을 바꾸면 결과가 즉시 갱신됩니다.</div>',
-    unsafe_allow_html=True,
-)
+    st.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
 
 current_year = datetime.now().year
 end_year = current_year - 1  # 종료연도는 직전 회계연도 자동 고정
