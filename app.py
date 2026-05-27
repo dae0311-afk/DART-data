@@ -914,11 +914,31 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
     동일 키에 여러 후보가 있으면 value_in_won 기준 최대값 선택.
     """
     targets = {
-        "감가상각비": ["감가상각비"],
-        "감가상각비_합산": ["감가상각비와무형자산상각비", "감가상각비및무형자산상각비"],
-        "무형자산상각비": ["무형자산상각비"],
+        "감가상각비": ["감가상각비", "유형자산감가상각비"],
+        "감가상각비_합산": [
+            "감가상각비와무형자산상각비",
+            "감가상각비및무형자산상각비",
+            "유형자산감가상각비및무형자산상각비",
+            "유형자산감가상각비와무형자산상각비",
+            "감가상각및무형자산상각비",
+            "감가상각비와기타상각비",
+            "감가상각비및기타상각비",
+            "감가상각비및무형자산상각",
+            "감가상각비와무형자산상각",
+        ],
+        "무형자산상각비": ["무형자산상각비", "무형자산상각"],
         "사용권자산상각비": ["사용권자산상각비", "사용권자산감가상각비"],
     }
+    # v37: 매칭 우선순위 — 긴 패턴부터(=더 구체적) 검사. substring 매칭으로 변경.
+    # 예: "감가상각비및무형자산상각비합계" 셀은 합산 키와 매칭, "감가상각비" 단독 셀은 감가만 매칭.
+    _matchers = []  # (normalized_pattern, key, length)
+    for _k, _plist in targets.items():
+        for _p in _plist:
+            _pn = _p.replace(" ", "").replace("　", "")
+            _matchers.append((_pn, _k, len(_pn)))
+    _matchers.sort(key=lambda x: -x[2])
+    # 누계액/잔액 등 BS 항목 오인 방지
+    _NEGATIVE_LABEL_SUFFIXES = ("누계액", "잔액", "차감액", "장부금액")
 
     # tables_with_units가 제공되면 그것을 우선 사용
     # v18: 페어 (table, unit) 또는 트리플 (table, unit, period) 모두 허용
@@ -1043,12 +1063,16 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
         # v18: 단일 row도 허용 (shape[0] < 1 만 제외)
         if t is None or t.shape[0] < 1 or t.shape[1] < 2:
             continue
-        # v18: 전기 표 스킵
-        if period_per_table.get(i) == "prior":
-            continue
         cols = [col_norm(c) for c in t.columns]
-        # 변동 분석 표 (기초/증가/감소/기말) 제외
         col_text = " ".join(cols)
+        # v37: '전기' 표 스킵을 보수적으로 — 표 컬럼에 '당기' 마커가 있으면
+        # 상속된 prior 마커는 무시 (표 자체가 당기 값을 들고 있음).
+        # 컬럼이 '공시금액'/'금액'만 있는 표(단일 컬럼)일 때만 상속 period가 의미 있음.
+        if period_per_table.get(i) == "prior":
+            has_current_col_marker = any(col_is_current(c) for c in cols)
+            if not has_current_col_marker:
+                continue
+        # 변동 분석 표 (기초/증가/감소/기말) 제외
         if "기초" in col_text and "기말" in col_text:
             continue
 
@@ -1078,15 +1102,20 @@ def find_da_from_notes(tables, tables_with_units: Optional[List[Tuple]] = None) 
             continue
 
         for idx in range(len(t)):
-            # 모든 라벨 컬럼에서 매칭 시도
+            # 모든 라벨 컬럼에서 매칭 시도 — substring + 긴 패턴 우선
             matched_key = None
             for lc in label_cols:
                 cell = t.iloc[idx][lc]
                 if pd.isna(cell):
                     continue
                 cell_norm = str(cell).replace(" ", "").replace("　", "")
-                for key, patterns in targets.items():
-                    if cell_norm in patterns:
+                if not cell_norm:
+                    continue
+                # BS 잔액/누계 표 셀은 D&A 비용 후보 아님 — 배제
+                if any(cell_norm.endswith(sfx) for sfx in _NEGATIVE_LABEL_SUFFIXES):
+                    continue
+                for pat, key, _ in _matchers:
+                    if pat in cell_norm:
                         matched_key = key
                         break
                 if matched_key:
@@ -1321,33 +1350,21 @@ def find_annual_report_rcept(_dart, corp_code: str, year: int) -> Optional[str]:
         return None
 
 
-def fetch_da_from_business_report(_dart, corp_code: str, year: int,
-                                  prefer_consolidated: bool = True) -> Dict[str, Optional[Dict]]:
-    """사업보고서(kind='A')의 주석 페이지에서 D&A 추출 (상장사 XBRL 보강용).
-
-    1) find_annual_report_rcept → rcept_no
-    2) get_sub_docs → 주석 페이지 URL (연결재무제표 주석 우선)
-    3) fetch_audit_tables_with_units로 단위 상속 적용된 표 페어 리스트 구성
-    4) find_da_from_notes로 (감가/무형/사용권) 검색
-
-    반환: {'감가상각비': {value_in_won, ...} | None, '무형자산상각비': ..., '사용권자산상각비': ...}
-    실패 시 모든 키 None.
-    """
-    empty = {"감가상각비": None, "무형자산상각비": None, "사용권자산상각비": None,
+_EMPTY_DA = {"감가상각비": None, "무형자산상각비": None, "사용권자산상각비": None,
              "감가상각비_합산": None}
-    rcept = find_annual_report_rcept(_dart, corp_code, year)
-    if not rcept:
-        return empty
-    sub_docs = get_sub_docs(_dart, rcept)
+
+
+def _extract_da_from_sub_docs(sub_docs, prefer_consolidated: bool) -> Dict[str, Optional[Dict]]:
+    """주어진 sub_docs(보고서 첨부문서 목록)에서 주석 페이지 → D&A 추출.
+
+    v37: 주석에서 못 찾으면 통합 재무제표 페이지(현금흐름표 본문)도 탐색.
+    """
     if sub_docs is None or sub_docs.empty:
-        return empty
-    # 주석 페이지만 추출 — 연결 우선
+        return dict(_EMPTY_DA)
+
     notes_mask = sub_docs["title"].astype(str).str.contains("주석", na=False)
     notes = sub_docs[notes_mask].copy()
-    if notes.empty:
-        return empty
 
-    # 연결재무제표 주석 우선, 없으면 재무제표 주석
     def priority(t):
         t = str(t)
         if prefer_consolidated and "연결재무제표 주석" in t:
@@ -1360,20 +1377,67 @@ def fetch_da_from_business_report(_dart, corp_code: str, year: int,
             return 2
         return 9
 
-    notes["_p"] = notes["title"].apply(priority)
-    notes = notes.sort_values("_p")
-    # 첫번째 매칭 페이지만 사용 (개별 페이지에 사업보고서 전체 D&A가 모두 있음)
-    chosen = notes.iloc[0:1][["title", "url"]]
+    candidates = pd.DataFrame()
+    if not notes.empty:
+        notes["_p"] = notes["title"].apply(priority)
+        notes = notes.sort_values("_p")
+        candidates = notes.iloc[0:2][["title", "url"]]
+
+    # v37: 주석 외에도 통합 재무제표 페이지 추가 — CF 본문에 D&A 개별 행이 있을 수 있음
+    fs_mask = sub_docs["title"].astype(str).str.contains("재무제표", na=False) & ~notes_mask
+    fs_pages = sub_docs[fs_mask].copy()
+    if not fs_pages.empty:
+        fs_pages = fs_pages.head(2)[["title", "url"]]
+        candidates = pd.concat([candidates, fs_pages], ignore_index=True) if not candidates.empty else fs_pages
+
+    if candidates.empty:
+        return dict(_EMPTY_DA)
 
     try:
-        # v18: include_period=True로 당기/전기 마커 상속 적용 (2025+ 단일 컬럼 포맷 대응)
-        triples = fetch_audit_tables_with_units(chosen, include_period=True)
+        triples = fetch_audit_tables_with_units(candidates, include_period=True)
         if not triples:
-            return empty
+            return dict(_EMPTY_DA)
         tables_only = [p[0] for p in triples]
         return find_da_from_notes(tables_only, tables_with_units=triples)
     except Exception:
-        return empty
+        return dict(_EMPTY_DA)
+
+
+def _has_any_da(da_dict: Dict) -> bool:
+    return any(
+        da_dict.get(k) is not None and da_dict[k].get("value_in_won") is not None
+        for k in ("감가상각비", "무형자산상각비", "사용권자산상각비", "감가상각비_합산")
+    )
+
+
+def fetch_da_from_business_report(_dart, corp_code: str, year: int,
+                                  prefer_consolidated: bool = True) -> Dict[str, Optional[Dict]]:
+    """상장사 D&A 보강 — 사업보고서(kind='A') 우선, 실패 시 감사보고서(kind='F') 폴백.
+
+    v37: 두 소스 중 D&A가 검출되는 첫 번째 결과 반환.
+      - 신규 상장사(예: 산일전기)는 상장 이전 회계연도(2023)에 사업보고서가 없고
+        감사보고서만 존재 → 감사보고서 폴백으로 D&A 추출 가능.
+      - 사업보고서 주석에서 D&A 추출 실패 시에도 감사보고서 시도.
+    """
+    # 1) 사업보고서 (kind='A')
+    rcept = find_annual_report_rcept(_dart, corp_code, year)
+    if rcept:
+        sub_docs = get_sub_docs(_dart, rcept)
+        result = _extract_da_from_sub_docs(sub_docs, prefer_consolidated)
+        if _has_any_da(result):
+            return result
+    else:
+        result = dict(_EMPTY_DA)
+
+    # 2) 폴백: 감사보고서/연결감사보고서 (kind='F')
+    audit_reports = find_external_audit_reports(_dart, corp_code, year)
+    for rep in audit_reports:
+        sub_docs = get_sub_docs(_dart, rep["rcept_no"])
+        audit_result = _extract_da_from_sub_docs(sub_docs, prefer_consolidated)
+        if _has_any_da(audit_result):
+            return audit_result
+
+    return result
 
 
 # ====================================================================
