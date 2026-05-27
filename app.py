@@ -2705,13 +2705,20 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    display_cols = [c for c in ["corp_name", "corp_code", "stock_code", "ceo_nm",
-                                "corp_cls", "est_dt", "adres", "induty_code"]
-                    if c in companies.columns]
-    st.dataframe(
-        companies[display_cols] if display_cols else companies,
-        use_container_width=True, hide_index=True,
-    )
+    # v22: 검색 결과 표는 5개 컬럼만 표시 (회사명/회사코드/대표이사/주소/산업코드)
+    _display_col_map = {
+        "corp_name": "회사명",
+        "corp_code": "회사코드",
+        "ceo_nm": "대표이사",
+        "adres": "주소",
+        "induty_code": "산업코드",
+    }
+    display_cols = [c for c in _display_col_map.keys() if c in companies.columns]
+    if display_cols:
+        df_show = companies[display_cols].rename(columns=_display_col_map)
+    else:
+        df_show = companies
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
 
     options = []
     for _, row in companies.iterrows():
