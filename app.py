@@ -22,10 +22,11 @@ import OpenDartReader
 
 # v28: AgGrid — 셀 클릭 시 행 자동 선택을 위해 도입
 try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
     _AGGRID_AVAILABLE = True
 except Exception:
     _AGGRID_AVAILABLE = False
+    JsCode = None  # type: ignore
 
 # ====================================================================
 # 0) 페이지 설정
@@ -2223,13 +2224,11 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                       unit_label: str,
                       bar_name: str, line_name: str,
                       bar_color: str = "#1E3D6B", line_color: str = "#E5862E"):
-    """막대(금액) + 라인(%) 콤보 차트 — v30: 단일 plot + dual y축.
-    ⚠️ subplot 구조 폐기 (v27~v29에서 바닥 공간 이슈 해결 안 됨)
-      - 이유: make_subplots는 하단 row 도메인 내부에 plot area 여백을
-        자동 할당 → y축 range 명시해도 바닥과 x축 사이 여백이 남음.
-      - 단일 plot에서 yaxis(바)/yaxis2(라인 overlaying) 구성 → 바닥이
-        plot area 하단과 일치 = x축 라인과 정확히 맞닿음.
-      - 텍스트 14px (요약재무제표 동일), 바 두께↓, 모든 글자 검정.
+    """막대(금액) + 라인(%) 콤보 차트 — v31:
+      - x축 라인을 y=0 위치에 고정 (shape로 그림)
+      - 연도 레이블은 annotation으로 차트 맨 아래 paper 좌표에 배치
+      - 따라서 바 바닥 = y=0 = x축 완벽 일치 구조적 보장
+      - 텍스트 14px, 모든 글자 검정
     """
     go = _import_plotly()
     if go is None:
@@ -2295,11 +2294,38 @@ def _make_combo_chart(title: str, sorted_years: List[int],
     else:
         line_yrange = [0, 1]
 
+    # v31: x축을 아예 숨기고, y=0 위치에 축 라인을 shape로 그림.
+    # 연도 레이블은 paper 좌표 기준 annotations로 맨 아래 고정 배치.
+    # → 바 바닥과 x축 선이 물리적으로 일치 (다른 부동 공간 아예 없음)
+    _x_axis_shape = dict(
+        type="line",
+        xref="paper", yref="y",
+        x0=0, x1=1, y0=0, y1=0,
+        line=dict(color=BLACK, width=1),
+    )
+    # 연도 레이블 — paper 좌표기준 하단에 균등 배치
+    _year_annotations = []
+    if xs:
+        n = len(xs)
+        # x 데이터 좌표과 paper 좌표의 관계: bargap=0.65에서 각 바 중심이
+        # x 카테고리 접축의 중심이므로 data좌표 사용 (xref=x)
+        for xv in xs:
+            _year_annotations.append(dict(
+                x=xv, y=0,
+                xref="x", yref="paper",
+                text=str(xv),
+                showarrow=False,
+                font=dict(size=FONT_SIZE, color=BLACK),
+                yshift=-8,
+                xanchor="center",
+                yanchor="top",
+            ))
+
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
                    font=dict(size=18, color=BLACK)),
         height=480,
-        margin=dict(l=40, r=40, t=90, b=50),
+        margin=dict(l=40, r=40, t=90, b=60),  # 연도 annotation 공간 확보
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
@@ -2307,12 +2333,11 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         bargap=0.65,
         font=dict(color=BLACK, size=FONT_SIZE),
-        dragmode=False,  # v30: 드래그 비활성화
+        dragmode=False,
         xaxis=dict(
-            showgrid=False, showline=True,
-            linecolor=BLACK, linewidth=1,
-            tickfont=dict(size=FONT_SIZE, color=BLACK),
-            fixedrange=True,  # 줌 차단
+            visible=False,           # 기본 x축 숨김
+            showgrid=False,
+            fixedrange=True,
         ),
         yaxis=dict(
             visible=False, showgrid=False, zeroline=False,
@@ -2325,6 +2350,8 @@ def _make_combo_chart(title: str, sorted_years: List[int],
             range=line_yrange,
             fixedrange=True,
         ),
+        shapes=[_x_axis_shape],
+        annotations=_year_annotations,
     )
     return fig
 
@@ -2803,13 +2830,13 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     selected_idx = None
 
     if _AGGRID_AVAILABLE:
-        # v29: AgGrid 이전 표 형태에 맞춰서 스타일 주입
-        # - 셀 테두리(focus border) 제거
-        # - 행 선택 연라이트 파랑 유지
-        # - 폰트 14px, st.dataframe스러운 레이아움
+        # v31: AgGrid 스타일을 st.dataframe과 거의 동일하게 맞춤
+        # - 폰트 14px, 행 높이 30px, 셀 패딩 좁게
+        # - 줄바꿈 없이 포함 수 있는 최소 열 폭 (autoSize)
+        # - 세로 선/했 구분선 st.dataframe 스타일로 단순화
         st.markdown("""
             <style>
-            /* v29: AgGrid 셀 포커스 테두리 제거 */
+            /* v31: AgGrid → st.dataframe 스타일로 맞춤 */
             .ag-cell-focus, .ag-cell-no-focus, .ag-cell {
                 border: none !important;
                 outline: none !important;
@@ -2818,39 +2845,79 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
                 border: none !important;
                 outline: none !important;
             }
-            .ag-theme-streamlit .ag-cell {
+            .ag-theme-streamlit, .ag-theme-streamlit .ag-cell,
+            .ag-theme-streamlit .ag-header-cell-text {
+                font-family: "Source Sans Pro", "Noto Sans KR", -apple-system, sans-serif !important;
                 font-size: 14px !important;
+            }
+            .ag-theme-streamlit .ag-cell {
+                padding-left: 8px !important;
+                padding-right: 8px !important;
+                line-height: 30px !important;
+            }
+            .ag-theme-streamlit .ag-header-cell {
+                padding-left: 8px !important;
+                padding-right: 8px !important;
             }
             .ag-theme-streamlit .ag-header-cell-text {
-                font-size: 14px !important;
                 font-weight: 600 !important;
+                color: rgba(49, 51, 63, 0.95) !important;
             }
-            /* 선택된 행 하이라이트 (연한 파랑) */
+            /* 행 선택 하이라이트 — st.dataframe 선택 색과 유사 */
             .ag-theme-streamlit .ag-row-selected {
-                background-color: #E3F2FD !important;
+                background-color: #FFE6E6 !important;
+            }
+            /* 세로 구분선 제거 (st.dataframe은 더 단순) */
+            .ag-theme-streamlit .ag-cell {
+                border-right: none !important;
             }
             </style>
         """, unsafe_allow_html=True)
 
         gb = GridOptionsBuilder.from_dataframe(df_show_with_idx)
-        # v29: 체크박스 없이 셀 클릭만으로 선택
+        # v31: 체크박스 없이 셀 클릭만으로 선택
         gb.configure_selection(
             selection_mode="single",
-            use_checkbox=False,         # 체크박스 숨김
+            use_checkbox=False,
             header_checkbox=False,
             rowMultiSelectWithClick=False,
             suppressRowDeselection=False,
         )
-        # 컬럼 설정 — 체크박스 제거
-        gb.configure_column("회사명", checkboxSelection=False, headerCheckboxSelection=False, width=180)
-        gb.configure_column("대표이사", width=120)
-        gb.configure_column("주소", flex=1)
+        # v31: 컬럼 폭은 자동 피팅 — 내용에 맞춰 줄바꿈 없는 최소폭
+        # 기본값: 너비 자동계산, 내용에 맞춰 면늨(suppressSizeToFit)
+        for _col in ["회사명", "대표이사", "주소"]:
+            gb.configure_column(
+                _col,
+                wrapText=False,
+                autoHeight=False,
+                resizable=True,
+                # min/max만 설정, width는 fit_columns_on_grid_load로 자동 계산
+                minWidth=80,
+            )
         gb.configure_column("_row_idx", hide=True)
-        # v29: 셀 포커스 숨김 + 행 선택 유지
+        # 주소 컬럼은 나머지 공간 차지 (flex=1)
+        gb.configure_column("주소", flex=1, wrapText=False, autoHeight=False, minWidth=200)
+
+        # v31: 최종 렌더링 후 컬럼 폭 자동 피팅 — 줄바꿈 없는 최소 폭
+        # 주소는 flex=1이라 나머지 공간 차지
+        _auto_size_js = JsCode("""
+        function(params) {
+            const allColumnIds = [];
+            params.columnApi.getAllColumns().forEach(function(column) {
+                if (column.colId !== '_row_idx' && column.colId !== '주소') {
+                    allColumnIds.push(column.colId);
+                }
+            });
+            params.columnApi.autoSizeColumns(allColumnIds, false);
+        }
+        """)
         gb.configure_grid_options(
-            suppressCellFocus=True,             # 셀 단위 포커스 테두리 숨김
+            suppressCellFocus=True,
             rowSelection="single",
-            suppressRowClickSelection=False,    # 셀(행) 클릭으로 선택 가능
+            suppressRowClickSelection=False,
+            rowHeight=30,        # v31: 행 높이 st.dataframe 수준
+            headerHeight=32,
+            onFirstDataRendered=_auto_size_js,
         )
         grid_options = gb.build()
 
@@ -2859,9 +2926,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             gridOptions=grid_options,
             update_mode=GridUpdateMode.SELECTION_CHANGED,
             data_return_mode=DataReturnMode.AS_INPUT,
-            fit_columns_on_grid_load=True,
+            fit_columns_on_grid_load=True,  # 주소 flex=1이 나머지 공간 차지
             allow_unsafe_jscode=True,
-            height=min(60 + 35 * max(len(df_show_with_idx), 1), 400),
+            height=min(50 + 30 * max(len(df_show_with_idx), 1), 400),
             theme="streamlit",
             key="company_aggrid",
         )
@@ -2998,49 +3065,10 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             })
 
         # -------- 요약 재무제표 --------
+        # v31: 원래 st.dataframe 형태로 원복 (사용자 요구)
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
-        # v30: 줄바꿈 없이 + 첫 컬럼(계정명) 고정 + 가로 스크롤
-        # → AgGrid 사용 (st.dataframe은 pinned column 미지원)
-        if _AGGRID_AVAILABLE and not template_df.empty:
-            _first_col = template_df.columns[0]
-            _gb_t = GridOptionsBuilder.from_dataframe(template_df)
-            # 첫 컬럼 고정 (pinned left) + 줄바꿈 비활성화
-            _gb_t.configure_column(
-                _first_col,
-                pinned="left",
-                width=180,
-                cellStyle={"fontWeight": "600"},
-                wrapText=False,
-                autoHeight=False,
-            )
-            # 나머지 컬럼: 줄바꿈 없음, 우측 정렬
-            for _c in template_df.columns[1:]:
-                _gb_t.configure_column(
-                    _c,
-                    wrapText=False,
-                    autoHeight=False,
-                    width=130,
-                    cellStyle={"textAlign": "right"},
-                    type=["rightAligned"],
-                )
-            _gb_t.configure_grid_options(
-                suppressCellFocus=True,
-                suppressMovableColumns=True,
-                domLayout="normal",
-            )
-            _grid_opts_t = _gb_t.build()
-            AgGrid(
-                template_df,
-                gridOptions=_grid_opts_t,
-                fit_columns_on_grid_load=False,  # 고정 너비 유지 + 필요시 가로스크롤
-                allow_unsafe_jscode=True,
-                height=min(80 + 32 * max(len(template_df), 1), 600),
-                theme="streamlit",
-                key="template_aggrid",
-            )
-        else:
-            st.dataframe(template_df, use_container_width=True, hide_index=True)
+        st.dataframe(template_df, use_container_width=True, hide_index=True)
         st.caption(
             f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
