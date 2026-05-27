@@ -2693,63 +2693,25 @@ section[data-testid="stSidebar"] .opt-caption {
     margin-top: 14px;
 }
 
-/* 사이드바 라디오 - 가로 세그먼트 토글 (이미지와 동일) */
-section[data-testid="stSidebar"] div[role="radiogroup"] {
-    gap: 6px !important;
-    flex-wrap: nowrap !important;
-    flex-direction: row !important;
-    display: flex !important;
+/* 사이드바 segmented_control — 버튼 사이 간격 제거 (빈틈없이 붙임) */
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] > div,
+section[data-testid="stSidebar"] [data-baseweb="button-group"] {
+    gap: 0 !important;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label {
-    flex: 1 1 0 !important;
-    min-width: 0 !important;
-    padding: 9px 6px !important;
-    border: 1px solid #d6d6d6 !important;
-    border-radius: 10px !important;
-    background: #ffffff !important;
-    cursor: pointer !important;
-    text-align: center !important;
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button {
     margin: 0 !important;
-    transition: all 0.15s ease !important;
-    box-shadow: none !important;
-    position: relative;
+    border-radius: 0 !important;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
-    border-color: #E5862E !important;
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button + button {
+    border-left-width: 0 !important;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) {
-    border: 1.5px solid #C7383C !important;
-    background: #FEEFEF !important;
-    color: #C7383C !important;
-    font-weight: 600 !important;
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:first-of-type {
+    border-top-left-radius: 8px !important;
+    border-bottom-left-radius: 8px !important;
 }
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) p,
-section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) div {
-    color: #C7383C !important;
-    font-weight: 600 !important;
-}
-/* 라디오 동그라미/인풋 완전 숨김 */
-section[data-testid="stSidebar"] div[role="radiogroup"] input,
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child,
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > span:first-child,
-section[data-testid="stSidebar"] div[role="radiogroup"] [data-testid="stMarkdownContainer"] ~ div,
-section[data-testid="stSidebar"] div[role="radiogroup"] svg {
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    opacity: 0 !important;
-    position: absolute !important;
-    pointer-events: none !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label > div {
-    width: 100% !important;
-    margin: 0 !important;
-}
-section[data-testid="stSidebar"] div[role="radiogroup"] > label p {
-    font-size: 0.92rem !important;
-    margin: 0 !important;
-    text-align: center !important;
-    width: 100% !important;
+section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:last-of-type {
+    border-top-right-radius: 8px !important;
+    border-bottom-right-radius: 8px !important;
 }
 
 /* 본문 헤더 둥근 박스 (info-pill) */
