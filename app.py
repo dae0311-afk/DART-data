@@ -178,33 +178,56 @@ def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
     tid = table_id or "finance_tbl"
     css = f"""
     <style>
+    .{tid}-wrap {{
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        max-width: 100%;
+        margin-bottom: 4px;
+        border: 1px solid #d6dbe2;
+        border-radius: 4px;
+    }}
     .{tid} {{
         width: 100%;
-        border-collapse: collapse;
-        border: 1px solid #d6dbe2;
+        border-collapse: separate;
+        border-spacing: 0;
         background: #ffffff;
         font-size: 14px;
         font-family: "Source Sans Pro", -apple-system, system-ui, sans-serif;
-        margin-bottom: 4px;
     }}
     .{tid} th, .{tid} td {{
         padding: 7px 12px;
         border-bottom: 1px solid #e8ebef;
         line-height: 1.35;
         vertical-align: middle;
+        white-space: nowrap;
     }}
     .{tid} thead th {{
         background: #fafbfc;
         font-weight: 600;
         color: #1E3D6B;
         border-bottom: 1px solid #d6dbe2;
+        position: sticky;
+        top: 0;
+        z-index: 2;
     }}
     .{tid} th.first-col,
-    .{tid} td.first-col {{ text-align: left; }}
+    .{tid} td.first-col {{
+        text-align: left;
+        position: sticky;
+        left: 0;
+        background: #ffffff;
+        z-index: 1;
+        box-shadow: 1px 0 0 #e8ebef;
+    }}
+    .{tid} thead th.first-col {{
+        background: #fafbfc;
+        z-index: 3;
+    }}
+    .{tid} tr.total-row td.first-col,
+    .{tid} tr.total-row td {{ background: #EFEFEF; font-weight: 600; }}
     .{tid} th.num-col   {{ text-align: center; }}
     .{tid} td.num-col   {{ text-align: right; font-variant-numeric: tabular-nums; }}
-    .{tid} tr.total-row td {{ background: #EFEFEF; font-weight: 600; }}
-    .{tid} tbody tr:last-child td {{ border-bottom: 1px solid #d6dbe2; }}
+    .{tid} tbody tr:last-child td {{ border-bottom: none; }}
     </style>
     """
 
@@ -228,7 +251,12 @@ def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
         body_rows.append(f"<tr{tr_class}>" + "".join(cells) + "</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
 
-    table_html = css + f"<table id='{tid}' class='{tid}'>{thead}{tbody}</table>"
+    table_html = (
+        css
+        + f"<div class='{tid}-wrap'><table id='{tid}' class='{tid}'>"
+        + thead + tbody
+        + "</table></div>"
+    )
     st.markdown(table_html, unsafe_allow_html=True)
 
 
@@ -2485,10 +2513,9 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         _l_min = min(_line_vals)
         _l_max = max(_line_vals)
         _l_span = max(_l_max - _l_min, abs(_l_max) * 0.5, 5)
-        # 라인 최소값이 화면 상단 ~75% 위치에 오도록 → 라인은 75~95% 구간에만 그려짐
-        # range=[l_min - span*4.0, l_max + span*0.3] → l_min은 (4.0/4.3)=93% 위치
-        # 즉 라인의 가장 낮은 점도 차트 상단 7% 영역에 위치 → 바(최대 64.5%)와 확실히 분리
-        line_yrange = [_l_min - _l_span * 4.0, _l_max + _l_span * 0.3]
+        # v37: 라벨이 잘리지 않도록 상단 여유 확장 (0.3 → 0.9). 라인 최고점은
+        # (4.0 / 4.9) = 81.6% 위치 → 그 위 18.4%가 라벨 공간 (top center 텍스트)
+        line_yrange = [_l_min - _l_span * 4.0, _l_max + _l_span * 0.9]
     else:
         line_yrange = [0, 1]
 
@@ -2584,11 +2611,13 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
         ("자본총계", "total_equity",      "#2E9F5C"),
     ]
     fig = go.Figure()
+    all_y_vals = []
     for label, key, color in series_def:
         xs, ys = _years_with_unit_values(metrics[key], sorted_years, unit_label)
         if not xs:
             continue
         text_labels = [_format_unit_label(v, unit_label) for v in ys]
+        all_y_vals.extend([v for v in ys if v is not None])
         fig.add_trace(go.Scatter(
             x=xs, y=ys, name=label,
             mode="lines+markers+text",
@@ -2596,8 +2625,17 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
             marker=dict(size=9, color=color),
             text=text_labels, textposition="top center",
             textfont=dict(size=FONT_SIZE, color=BLACK),
+            cliponaxis=False,
             hovertemplate=f"%{{x}}<br>{label}: %{{text}} {unit_label}<extra></extra>",
         ))
+    # v37: 라벨이 plot 영역 밖으로 잘리지 않도록 y축 range에 상단 25% 여유 확보
+    if all_y_vals:
+        _y_max = max(all_y_vals)
+        _y_min = min(all_y_vals + [0])
+        _y_span = _y_max - _y_min
+        balance_yrange = [_y_min - _y_span * 0.05, _y_max + _y_span * 0.25]
+    else:
+        balance_yrange = None
     # v34: 회색 둘근박스 제목 배지 (콤보 차트와 동일 스타일)
     _title_badge = dict(
         x=0.5, y=1.10,
@@ -2624,7 +2662,8 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
                    tickfont=dict(size=FONT_SIZE, color=BLACK),
                    fixedrange=True),  # v30: 줌 차단
         yaxis=dict(visible=False, showgrid=False, zeroline=False,
-                   fixedrange=True),
+                   fixedrange=True,
+                   range=balance_yrange),
         font=dict(color=BLACK, size=FONT_SIZE),
         dragmode=False,
         annotations=[_title_badge],  # v34: 제목 배지
