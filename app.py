@@ -3175,7 +3175,8 @@ if search_btn:
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
     st.markdown(
-        f"<div class='hpe-section'>검색 결과 ({len(companies)}건)</div>",
+        f"<div class='hpe-section'>검색 결과 ({len(companies)}건) "
+        f"<span style='font-size:0.85rem;font-weight:400;color:#6b7785;'>: 클릭/터치</span></div>",
         unsafe_allow_html=True,
     )
 
