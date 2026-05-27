@@ -140,6 +140,98 @@ def _df_style_finance(df, *, zero_to_dash=False, highlight_total_row=False, tota
         return work
 
 
+# v36: HTML 테이블 렌더 — st.dataframe(Styler) CSS가 Glide DataGrid에서 무시되어
+# text-align이 적용되지 않는 문제를 우회. 직접 HTML을 만들어 st.markdown으로 렌더하면
+# CSS 제어가 완전한다. 정렬/0→dash/합계행 하이라이트를 모두 여기서 처리.
+def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
+                         total_keywords=("합계",), table_id=None):
+    """재무 표를 HTML로 렌더.
+
+    정렬:
+      - 첫 컬럼(계정명/단위): 좌측
+      - 나머지 컬럼(연도별 숫자): 우측
+      - 헤더 — 첫 컬럼: 좌측, 나머지(연도): 중앙
+
+    올션:
+      - zero_to_dash: 0/N/A/⓮ → '-'
+      - highlight_total_row: 첫 컬럼에 total_keywords 포함된 행은 회색 배경 + bold
+    """
+    if df is None or df.empty:
+        return
+    import re as _re
+    import html as _html
+    cols = list(df.columns)
+    first_col = cols[0]
+    other_cols = cols[1:]
+    _zero_pat = _re.compile(r"^\(?0+(?:\.0+)?\)?$")
+
+    def _conv(v):
+        if v is None:
+            return "-"
+        s = str(v).strip()
+        if s == "" or s.upper() == "N/A":
+            return "-"
+        if _zero_pat.match(s):
+            return "-"
+        return s
+
+    tid = table_id or "finance_tbl"
+    css = f"""
+    <style>
+    .{tid} {{
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid #d6dbe2;
+        background: #ffffff;
+        font-size: 14px;
+        font-family: "Source Sans Pro", -apple-system, system-ui, sans-serif;
+        margin-bottom: 4px;
+    }}
+    .{tid} th, .{tid} td {{
+        padding: 7px 12px;
+        border-bottom: 1px solid #e8ebef;
+        line-height: 1.35;
+        vertical-align: middle;
+    }}
+    .{tid} thead th {{
+        background: #fafbfc;
+        font-weight: 600;
+        color: #1E3D6B;
+        border-bottom: 1px solid #d6dbe2;
+    }}
+    .{tid} th.first-col,
+    .{tid} td.first-col {{ text-align: left; }}
+    .{tid} th.num-col   {{ text-align: center; }}
+    .{tid} td.num-col   {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .{tid} tr.total-row td {{ background: #EFEFEF; font-weight: 600; }}
+    .{tid} tbody tr:last-child td {{ border-bottom: 1px solid #d6dbe2; }}
+    </style>
+    """
+
+    # <thead>
+    head_cells = [f"<th class='first-col'>{_html.escape(str(first_col))}</th>"]
+    for c in other_cols:
+        head_cells.append(f"<th class='num-col'>{_html.escape(str(c))}</th>")
+    thead = "<thead><tr>" + "".join(head_cells) + "</tr></thead>"
+
+    # <tbody>
+    body_rows = []
+    for _, row in df.iterrows():
+        first_val = str(row.iloc[0]) if len(row) > 0 else ""
+        is_total = highlight_total_row and any(kw in first_val for kw in total_keywords)
+        tr_class = " class='total-row'" if is_total else ""
+        cells = [f"<td class='first-col'>{_html.escape(first_val)}</td>"]
+        for c in other_cols:
+            v = row[c]
+            disp = _conv(v) if zero_to_dash else ("" if v is None else str(v))
+            cells.append(f"<td class='num-col'>{_html.escape(disp)}</td>")
+        body_rows.append(f"<tr{tr_class}>" + "".join(cells) + "</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+
+    table_html = css + f"<table id='{tid}' class='{tid}'>{thead}{tbody}</table>"
+    st.markdown(table_html, unsafe_allow_html=True)
+
+
 # v32: 모든 st.dataframe에 적용 — 숫자 컬럼 우측 정렬 (문자열 콤마 포함)
 def _df_right_align_numbers(df):
     """DataFrame의 숫자적 컬럼(콤마/퍼센트 포함)을 우측 정렬해서 Styler 반환.
@@ -3051,33 +3143,86 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # v34: 자동피팅 강화 — (1) autoSize → (2) 컬럼 합계 < container 폭일 때 잔여공간을 마지막 컬럼에 채움
         # 이전 이슈: "한솔오리온텍" 의 주소가 짧음 → minWidth=200이어도 grid 전체 폭보다 작아 테두리에 빈공간 생김
         # 이 JS가 주소컬럼 폭을 "container폭 - 다른컬럼합" 으로 강제 설정
-        # v35: 자동피팅 — sizeColumnsToFit() 우선 사용 (ag-grid 표준 API).
-        # 이전 v34 방식(autoSize → 잔여공간 계산 → setColumnWidth)이 "한솔오리온텍"에서
-        # 작동 안 함이 검증됨. sizeColumnsToFit은 컬럼들이 grid 폭을 정확히 채우도록
-        # 비율 분배하므로 단순하고 안정적.
+        # v36: 자동피팅 — 사용자 요구에 맞습所 "콘텐츠 폭으로 자동 맞춤 + 잔여공간은 주소칸이 흡수"
+        # v35 sizeColumnsToFit은 컬럼을 균등 분배(380/379/379)해서 사용자 요구와 부합 불일치.
+        # v34 방식 복원 + .ag-root-wrapper를 직접 찾는 방식으로 수정 (params.api.getGui()가
+        # 좀은 element 반환하는 경우 대비).
         _auto_size_js = JsCode("""
         function(params) {
             var doFit = function() {
                 try {
-                    console.log('[v35 autoFit] doFit start');
-                    if (params.api.sizeColumnsToFit) {
-                        params.api.sizeColumnsToFit();
-                        console.log('[v35 autoFit] sizeColumnsToFit called');
+                    // 1단계: autoSize (콘텐츠 폭에 맞습所 컬럼 폭 자동 계산)
+                    var allColumnIds = [];
+                    var cols = params.api.getColumns ? params.api.getColumns() : (params.columnApi ? params.columnApi.getAllColumns() : []);
+                    if (!cols || cols.length === 0) return;
+                    cols.forEach(function(column) {
+                        var cid = column.getColId ? column.getColId() : column.colId;
+                        if (cid && cid !== '_row_idx') allColumnIds.push(cid);
+                    });
+                    if (allColumnIds.length === 0) return;
+
+                    if (params.api.autoSizeColumns) {
+                        try { params.api.autoSizeColumns(allColumnIds, false); } catch(_) {}
+                    } else if (params.columnApi && params.columnApi.autoSizeColumns) {
+                        try { params.columnApi.autoSizeColumns(allColumnIds, false); } catch(_) {}
+                    }
+
+                    // 2단계: container 폭 측정 — .ag-root-wrapper 직접 찾기
+                    var rootWrap = document.querySelector('.ag-root-wrapper');
+                    var gridWidth = rootWrap ? rootWrap.clientWidth : 0;
+                    if (gridWidth <= 0) {
+                        console.log('[v36 autoFit] gridWidth=0, abort');
                         return;
                     }
-                    if (params.columnApi && params.columnApi.sizeColumnsToFit) {
-                        params.columnApi.sizeColumnsToFit();
-                        console.log('[v35 autoFit] sizeColumnsToFit via columnApi');
-                        return;
+
+                    // 3단계: 실제 컬럼 폭 합계
+                    var widthMap = {};
+                    var totalCol = 0;
+                    cols.forEach(function(column) {
+                        var cid = column.getColId ? column.getColId() : column.colId;
+                        if (cid && cid !== '_row_idx') {
+                            var w = column.getActualWidth ? column.getActualWidth() : 0;
+                            widthMap[cid] = w;
+                            totalCol += w;
+                        }
+                    });
+
+                    var available = gridWidth - 2;  // 테두리 1px×2
+                    console.log('[v36 autoFit] grid=' + gridWidth + ', totalCol=' + totalCol + ', available=' + available);
+
+                    // 4단계: 컬럼 합 < container 폭 → 마지막 컬럼(주소) 잔여공간 흡수
+                    if (totalCol < available) {
+                        var lastColId = allColumnIds[allColumnIds.length - 1];
+                        var lastW = widthMap[lastColId] || 0;
+                        var newLastW = lastW + (available - totalCol);
+                        console.log('[v36 autoFit] expanding ' + lastColId + ' from ' + lastW + ' to ' + newLastW);
+                        var done = false;
+                        if (params.api.setColumnWidth) {
+                            try { params.api.setColumnWidth(lastColId, newLastW); done = true; } catch(e) { console.log('setColumnWidth err', e); }
+                        }
+                        if (!done && params.columnApi && params.columnApi.setColumnWidth) {
+                            try { params.columnApi.setColumnWidth(lastColId, newLastW); done = true; } catch(_) {}
+                        }
+                        if (!done && params.api.applyColumnState) {
+                            try {
+                                params.api.applyColumnState({
+                                    state: [{ colId: lastColId, width: newLastW }],
+                                    applyOrder: false,
+                                });
+                                done = true;
+                                console.log('[v36 autoFit] applyColumnState used');
+                            } catch(e) { console.log('applyColumnState err', e); }
+                        }
+                        if (!done) console.log('[v36 autoFit] all setWidth methods failed');
                     }
-                    console.log('[v35 autoFit] sizeColumnsToFit not available');
                 } catch(e) {
-                    console.log('[v35 autoFit] error', e);
+                    console.log('[v36 autoFit] error', e);
                 }
             };
-            setTimeout(doFit, 50);
-            setTimeout(doFit, 300);
-            setTimeout(doFit, 800);
+            // 세 시점: 가상스크롤/소량/대량 모두 커버
+            setTimeout(doFit, 80);
+            setTimeout(doFit, 350);
+            setTimeout(doFit, 900);
         }
         """)
         gb.configure_grid_options(
@@ -3159,13 +3304,30 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
     st.session_state.pop("auto_extract", None)
 
-    if extract_btn:
+    # v36 이슈2: 옵션 변경 자동 감지 — 동일 회사에서 fs/period 변경 시 자동 재추출
+    _ext = st.session_state.get("extracted")
+    auto_refresh_needed = False
+    if (not extract_btn) and _ext and _ext.get("corp_code") == corp_code:
+        _snap = _ext.get("snapshot", {}) or {}
+        if (_snap.get("fs_div_target") != fs_div_target
+                or _snap.get("period_label") != period_label
+                or _snap.get("end_year") != end_year):
+            auto_refresh_needed = True
+
+    # 회사가 바뀌면 기존 추출 결과 폐기
+    if _ext and _ext.get("corp_code") != corp_code:
+        st.session_state.pop("extracted", None)
+        _ext = None
+
+    if extract_btn or auto_refresh_needed:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
 
         progress = st.progress(0.0)
         status = st.empty()
+        if auto_refresh_needed:
+            status.text("⚙️ 옵션 변경 감지 — 데이터 재추출 중...")
 
         def update_progress(idx, total, label):
             if total > 0:
@@ -3179,6 +3341,34 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         )
         progress.empty()
         status.empty()
+
+        # session_state 저장
+        st.session_state["extracted"] = {
+            "corp_code": corp_code,
+            "corp_name": corp_name,
+            "corp_cls": corp_cls,
+            "years": years,
+            "start_year": start_year,
+            "end_year": end_year,
+            "yearly_data": yearly_data,
+            "yearly_meta": yearly_meta,
+            "selected_corp": selected_corp.to_dict() if hasattr(selected_corp, "to_dict") else dict(selected_corp),
+            "snapshot": {
+                "fs_div_target": fs_div_target,
+                "period_label": period_label,
+                "end_year": end_year,
+            },
+        }
+
+    # v36 이슈2: 추출 결과가 session_state에 있으면 항상 렌더 (옵션 변경 즉시 반영)
+    _ext = st.session_state.get("extracted")
+    if _ext and _ext.get("corp_code") == corp_code:
+        yearly_data = _ext["yearly_data"]
+        yearly_meta = _ext["yearly_meta"]
+        years = _ext["years"]
+        start_year = _ext["start_year"]
+        end_year = _ext["end_year"]
+        selected_corp = _ext.get("selected_corp", selected_corp)
 
         # -------- 연결/별도 실제 사용 연도별 추적 --------
         per_year_fs = {}  # {year: "CFS"|"OFS"|"-"}
@@ -3205,12 +3395,27 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             main_fs = fs_div_target
         main_fs_label = "연결" if main_fs == "CFS" else "별도"
 
+        # v36: 연결/별도가 연도별 다를 때 칩 표시 변경
+        # 고유 fs 값들 수집
+        cfs_years = sorted([y for y, v in per_year_fs.items() if v == "CFS"])
+        ofs_years = sorted([y for y, v in per_year_fs.items() if v == "OFS"])
+        if cfs_years and ofs_years:
+            # 혼합 — 연도 지정 표시 (연도 많으면 "연결(N개) + 별도(M개)")
+            if len(cfs_years) + len(ofs_years) <= 8:
+                fs_chip_val = (
+                    f"연결 {','.join(map(str, cfs_years))} · 별도 {','.join(map(str, ofs_years))}"
+                )
+            else:
+                fs_chip_val = f"연결 {len(cfs_years)}개 · 별도 {len(ofs_years)}개"
+        else:
+            fs_chip_val = f"{main_fs_label}재무제표"
+
         # -------- 헤더 둥근 박스 4개 --------
         period_disp = f"{start_year}~{end_year}"
         pill_html = (
             "<div class='info-pill-row'>"
             f"<div class='info-pill pill-primary'><span class='pill-key'>회사</span> <span class='pill-val'>{corp_name}</span></div>"
-            f"<div class='info-pill'><span class='pill-key'>구분</span> <span class='pill-val'>{main_fs_label}재무제표</span></div>"
+            f"<div class='info-pill'><span class='pill-key'>구분</span> <span class='pill-val'>{fs_chip_val}</span></div>"
             f"<div class='info-pill pill-accent'><span class='pill-key'>단위</span> <span class='pill-val'>{unit_label}</span></div>"
             f"<div class='info-pill'><span class='pill-key'>기간</span> <span class='pill-val'>{period_disp}</span></div>"
             "</div>"
@@ -3244,13 +3449,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # v32: 수직 스크롤 없이 전체 표시 + 숫자 우측 정렬
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
-        _tpl_height = 38 + 35 * max(len(template_df), 1)  # 헤더 38 + 행당 35
-        # v34: 정렬(계정명 좌, 연도 중앙헤더/우측숫자) + 0→dash 적용
-        st.dataframe(
-            _df_style_finance(template_df, zero_to_dash=True),
-            use_container_width=True, hide_index=True,
-            height=_tpl_height,
-        )
+        # v36: HTML 테이블 렌더 — st.dataframe은 Styler text-align이 무시됨
+        render_finance_html(template_df, zero_to_dash=True, table_id="finance_summary")
         st.caption(
             f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
@@ -3291,11 +3491,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         # v34: 좌우 2컬럼 배치 제거 — 현금성자산 → 차입금 → D&A 수직 배치
         st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
-        _h = 38 + 35 * max(len(cash_comp_df), 1)
-        st.dataframe(
-            _df_style_finance(cash_comp_df, zero_to_dash=True, highlight_total_row=True),
-            use_container_width=True, hide_index=True, height=_h,
-        )
+        # v36: HTML 테이블로 렌더 (우측정렬 보장)
+        render_finance_html(cash_comp_df, zero_to_dash=True, highlight_total_row=True,
+                            table_id="finance_cash")
         st.caption(
             "· 요약표 '현금성자산' = 이 구성표 합계.\n"
             "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
@@ -3303,11 +3501,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         )
 
         st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
-        _h = 38 + 35 * max(len(debt_comp_df), 1)
-        st.dataframe(
-            _df_style_finance(debt_comp_df, zero_to_dash=True, highlight_total_row=True),
-            use_container_width=True, hide_index=True, height=_h,
-        )
+        # v36: HTML 테이블로 렌더
+        render_finance_html(debt_comp_df, zero_to_dash=True, highlight_total_row=True,
+                            table_id="finance_debt")
         st.caption(
             "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
             "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
@@ -3315,11 +3511,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         # -------- D&A 구성표 --------
         st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
-        _h = 38 + 35 * max(len(da_comp_df), 1)
-        st.dataframe(
-            _df_style_finance(da_comp_df, zero_to_dash=True, highlight_total_row=True),
-            use_container_width=True, hide_index=True, height=_h,
-        )
+        # v36: HTML 테이블로 렌더
+        render_finance_html(da_comp_df, zero_to_dash=True, highlight_total_row=True,
+                            table_id="finance_da")
         st.caption(
                 "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
                 "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
