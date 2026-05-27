@@ -1910,6 +1910,14 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
             if da.get("사용권자산상각비") and da["사용권자산상각비"].get("value_in_won") is not None:
                 yearly_data[y]["_사용권자산상각비"] = da["사용권자산상각비"]["value_in_won"]
                 updated = True
+            # v37: 개별 감가/무형이 모두 누락이면 '감가상각비_합산' (감가+무형 합산 행) 폴백.
+            # 산일전기 등 주석에 합산 행만 있는 케이스 → EBITDA 계산 실패 방지.
+            if (yearly_data[y].get("_유형자산감가상각비") is None
+                and yearly_data[y].get("_무형자산상각비") is None):
+                combined = da.get("감가상각비_합산")
+                if combined and combined.get("value_in_won") is not None:
+                    yearly_data[y]["_유형자산감가상각비"] = combined["value_in_won"]
+                    updated = True
             if updated:
                 meta = yearly_meta.get(y, {})
                 meta["da_source"] = "사업보고서 주석"
