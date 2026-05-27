@@ -2223,19 +2223,16 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                       unit_label: str,
                       bar_name: str, line_name: str,
                       bar_color: str = "#1E3D6B", line_color: str = "#E5862E"):
-    """막대(금액) + 라인(%) 콤보 차트 — 상하 subplot 분리.
-    v29 수정:
-      - 하단 바 y축 범위를 [0, max*1.25] 명시 할당 → 바닥이 x축에 정확히 닿음
-        (rangemode=tozero는 한계가 있으므로)
-      - 모든 텍스트/숫자 14px (요약재무제표 st.dataframe 수준)
-      - 레이블→막대/마커 간격 확보: bar max*1.25, vertical_spacing↑
+    """막대(금액) + 라인(%) 콤보 차트 — v30: 단일 plot + dual y축.
+    ⚠️ subplot 구조 폐기 (v27~v29에서 바닥 공간 이슈 해결 안 됨)
+      - 이유: make_subplots는 하단 row 도메인 내부에 plot area 여백을
+        자동 할당 → y축 range 명시해도 바닥과 x축 사이 여백이 남음.
+      - 단일 plot에서 yaxis(바)/yaxis2(라인 overlaying) 구성 → 바닥이
+        plot area 하단과 일치 = x축 라인과 정확히 맞닿음.
+      - 텍스트 14px (요약재무제표 동일), 바 두께↓, 모든 글자 검정.
     """
     go = _import_plotly()
     if go is None:
-        return None
-    try:
-        from plotly.subplots import make_subplots
-    except Exception:
         return None
 
     xs = [str(y) for y in sorted_years]
@@ -2245,15 +2242,22 @@ def _make_combo_chart(title: str, sorted_years: List[int],
     line_text = [_format_pct_label(v) for v in ys_line]
 
     BLACK = "#000000"
-    FONT_SIZE = 14  # 요약재무제표 st.dataframe 수준 (Streamlit 기본)
+    FONT_SIZE = 14
 
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.32, 0.68],
-        vertical_spacing=0.10,  # 상/하 간격 확보 (라인↔바 겁침 방지 + 여백)
-    )
+    fig = go.Figure()
 
-    # 상단: 라인 (이익률/성장률 등)
+    # 바 — 기본 yaxis (좌측, 보이지 않음)
+    fig.add_trace(go.Bar(
+        x=xs, y=ys_bar, name=bar_name,
+        marker_color=bar_color,
+        text=bar_text, textposition="outside",
+        textfont=dict(size=FONT_SIZE, color=BLACK),
+        cliponaxis=False,
+        yaxis="y",
+        hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
+    ))
+
+    # 라인 — 별도 yaxis2 (overlaying y, 보이지 않음)
     fig.add_trace(go.Scatter(
         x=xs, y=ys_line, name=line_name,
         mode="lines+markers+text",
@@ -2262,24 +2266,40 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         text=line_text, textposition="top center",
         textfont=dict(size=FONT_SIZE, color=BLACK),
         cliponaxis=False,
+        yaxis="y2",
         hovertemplate=f"%{{x}}<br>{line_name}: %{{text}}<extra></extra>",
-    ), row=1, col=1)
+    ))
 
-    # 하단: 바 (금액)
-    fig.add_trace(go.Bar(
-        x=xs, y=ys_bar, name=bar_name,
-        marker_color=bar_color,
-        text=bar_text, textposition="outside",
-        textfont=dict(size=FONT_SIZE, color=BLACK),
-        cliponaxis=False,
-        hovertemplate=f"%{{x}}<br>{bar_name}: %{{text}} {unit_label}<extra></extra>",
-    ), row=2, col=1)
+    # 바 y축 range — 명시 할당 ([0, max*1.30])
+    _bar_vals = [v for v in ys_bar if v is not None]
+    if _bar_vals:
+        _b_max = max(_bar_vals)
+        _b_min = min(_bar_vals + [0])
+        if _b_min < 0:
+            _b_pad = (_b_max - _b_min) * 0.20
+            bar_yrange = [_b_min - _b_pad, _b_max + _b_pad]
+        else:
+            bar_yrange = [0, _b_max * 1.30]  # 위로 30% 여백 (레이블 공간)
+    else:
+        bar_yrange = [0, 1]
+
+    # 라인 y축 range — 바와 겹치지 않도록 상단으로 밀어냄
+    # 트릭: 라인 range를 크게 잡아 라인이 상단 30% 구간에만 나타나도록.
+    _line_vals = [v for v in ys_line if v is not None]
+    if _line_vals:
+        _l_min = min(_line_vals)
+        _l_max = max(_line_vals)
+        _l_span = max(_l_max - _l_min, abs(_l_max) * 0.5, 5)
+        # 라인 도메인을 상단 ~30%에 배치: 하단은 매우 낮게
+        line_yrange = [_l_min - _l_span * 3.0, _l_max + _l_span * 0.5]
+    else:
+        line_yrange = [0, 1]
 
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", x=0.5, xanchor="center",
                    font=dict(size=18, color=BLACK)),
-        height=540,
-        margin=dict(l=40, r=40, t=90, b=40),
+        height=480,
+        margin=dict(l=40, r=40, t=90, b=50),
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=True,
@@ -2287,39 +2307,25 @@ def _make_combo_chart(title: str, sorted_years: List[int],
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         bargap=0.65,
         font=dict(color=BLACK, size=FONT_SIZE),
+        dragmode=False,  # v30: 드래그 비활성화
+        xaxis=dict(
+            showgrid=False, showline=True,
+            linecolor=BLACK, linewidth=1,
+            tickfont=dict(size=FONT_SIZE, color=BLACK),
+            fixedrange=True,  # 줌 차단
+        ),
+        yaxis=dict(
+            visible=False, showgrid=False, zeroline=False,
+            range=bar_yrange,
+            fixedrange=True,
+        ),
+        yaxis2=dict(
+            visible=False, showgrid=False, zeroline=False,
+            overlaying="y", side="right",
+            range=line_yrange,
+            fixedrange=True,
+        ),
     )
-    # 상단 라인 축 — 레이블 공간 확보 위해 range 수동 확장
-    _line_vals = [v for v in ys_line if v is not None]
-    if _line_vals:
-        _l_min = min(_line_vals + [0])
-        _l_max = max(_line_vals + [0])
-        _l_pad = max((_l_max - _l_min) * 0.30, abs(_l_max) * 0.20, 5)
-        fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
-                         range=[_l_min - _l_pad, _l_max + _l_pad], row=1, col=1)
-    else:
-        fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=1, col=1)
-    fig.update_xaxes(visible=False, row=1, col=1)
-
-    # 하단 바 축 — 명시적 range [0, max*1.25]으로 바닥 x축에 닿게 + 레이블 공간 확보
-    _bar_vals = [v for v in ys_bar if v is not None]
-    if _bar_vals:
-        _b_max = max(_bar_vals)
-        _b_min = min(_bar_vals + [0])
-        if _b_min < 0:
-            # 음수 존재 → 0을 포함하되 파도될 수 있도록 range 확장
-            _b_pad = (_b_max - _b_min) * 0.20
-            fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
-                             range=[_b_min - _b_pad, _b_max + _b_pad], row=2, col=1)
-        else:
-            # 양수만 → [0, max*1.25] 명시 → 바닥이 x축에 정확히 닿음
-            fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
-                             range=[0, _b_max * 1.25], row=2, col=1)
-    else:
-        fig.update_yaxes(visible=False, showgrid=False, zeroline=False,
-                         rangemode="tozero", row=2, col=1)
-    fig.update_xaxes(showgrid=False, showline=True,
-                     linecolor=BLACK, linewidth=1,
-                     tickfont=dict(size=FONT_SIZE, color=BLACK), row=2, col=1)
     return fig
 
 
@@ -2362,9 +2368,12 @@ def _make_balance_chart(title: str, sorted_years: List[int], metrics: Dict, unit
         legend=dict(orientation="h", yanchor="top", y=1.10, xanchor="center", x=0.5,
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
         xaxis=dict(showgrid=False, showline=True, linecolor=BLACK, linewidth=1,
-                   tickfont=dict(size=FONT_SIZE, color=BLACK)),
-        yaxis=dict(visible=False, showgrid=False, zeroline=False),
+                   tickfont=dict(size=FONT_SIZE, color=BLACK),
+                   fixedrange=True),  # v30: 줌 차단
+        yaxis=dict(visible=False, showgrid=False, zeroline=False,
+                   fixedrange=True),
         font=dict(color=BLACK, size=FONT_SIZE),
+        dragmode=False,  # v30: 드래그 비활성화
     )
     return fig
 
@@ -2713,7 +2722,7 @@ def search_companies(_dart, _api_key: str, query: str) -> pd.DataFrame:
 
 # ----- 본문 상단: 기업 검색 영역 -----
 # v21: 엔터 키 입력 시 자동 검색 + 검색 결과 1건이면 자동 데이터 추출
-st.markdown("<div class='hpe-section'>🔎 기업 검색 (엔터로 자동 실행)</div>", unsafe_allow_html=True)
+st.markdown("<div class='hpe-section'>🔎 기업 검색</div>", unsafe_allow_html=True)
 
 # 검색 영역 — st.form으로 감싸 엔터 입력 시 자동 submit
 with st.form(key="search_form", clear_on_submit=False):
@@ -2901,11 +2910,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     corp_cls = selected_corp.get("corp_cls", "")
     corp_name = selected_corp.get("corp_name", "")
 
-    if corp_cls == "E":
-        st.warning(
-            "ℹ️ 외감 비상장기업입니다. 감사보고서의 HTML 본문을 직접 파싱합니다. "
-            "단위는 감사보고서 헤더 기준 자동 감지, 표시 단위는 좌측 사이드바 설정을 따릅니다."
-        )
+    # v30: 외감 비상장기업 안내 메시지 제거 (사용자 요구)
 
     extract_btn = st.button("데이터 추출", type="primary", use_container_width=True, key="extract_btn_active")
 
@@ -2995,7 +3000,47 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # -------- 요약 재무제표 --------
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
-        st.dataframe(template_df, use_container_width=True, hide_index=True)
+        # v30: 줄바꿈 없이 + 첫 컬럼(계정명) 고정 + 가로 스크롤
+        # → AgGrid 사용 (st.dataframe은 pinned column 미지원)
+        if _AGGRID_AVAILABLE and not template_df.empty:
+            _first_col = template_df.columns[0]
+            _gb_t = GridOptionsBuilder.from_dataframe(template_df)
+            # 첫 컬럼 고정 (pinned left) + 줄바꿈 비활성화
+            _gb_t.configure_column(
+                _first_col,
+                pinned="left",
+                width=180,
+                cellStyle={"fontWeight": "600"},
+                wrapText=False,
+                autoHeight=False,
+            )
+            # 나머지 컬럼: 줄바꿈 없음, 우측 정렬
+            for _c in template_df.columns[1:]:
+                _gb_t.configure_column(
+                    _c,
+                    wrapText=False,
+                    autoHeight=False,
+                    width=130,
+                    cellStyle={"textAlign": "right"},
+                    type=["rightAligned"],
+                )
+            _gb_t.configure_grid_options(
+                suppressCellFocus=True,
+                suppressMovableColumns=True,
+                domLayout="normal",
+            )
+            _grid_opts_t = _gb_t.build()
+            AgGrid(
+                template_df,
+                gridOptions=_grid_opts_t,
+                fit_columns_on_grid_load=False,  # 고정 너비 유지 + 필요시 가로스크롤
+                allow_unsafe_jscode=True,
+                height=min(80 + 32 * max(len(template_df), 1), 600),
+                theme="streamlit",
+                key="template_aggrid",
+            )
+        else:
+            st.dataframe(template_df, use_container_width=True, hide_index=True)
         st.caption(
             f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
@@ -3008,10 +3053,19 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             metrics = compute_yearly_metrics(yearly_data, yearly_meta, years)
             charts = build_all_charts(metrics, years, unit_label=unit_label)
             chart_order = ["revenue", "ebitda", "op_income", "net_income", "balance"]
+            # v30: 차트 인터랙션 비활성화 — 드래그/줌/클릭 모두 차단
+            _chart_config = {
+                "staticPlot": True,
+                "displayModeBar": False,
+                "scrollZoom": False,
+                "doubleClick": False,
+                "showAxisDragHandles": False,
+                "showAxisRangeEntryBoxes": False,
+            }
             for key in chart_order:
                 fig = charts.get(key)
                 if fig is not None:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True, config=_chart_config)
         except ImportError:
             st.warning(
                 "⚠️ plotly 패키지가 설치되지 않아 차트를 표시할 수 없습니다. "
