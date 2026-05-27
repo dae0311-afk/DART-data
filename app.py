@@ -2237,10 +2237,11 @@ def build_da_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List
                                 unit_label: str = "억원") -> pd.DataFrame:
     """D&A 구성표 (EBITDA 가산항).
 
-    구성:
+    구성 (v35):
     - 유형 감가상각비 / 무형 상각비 / 사용권자산 감가상각비 각 항목 행
-    - 　합계 (D&A 총합 = EBITDA 가산항)
-    - 추출 소스 행 (연도별 da_source / source 표시)
+    - 합계 (D&A 총합 = EBITDA 가산항)
+    - v35: '추출 소스' 행 제거 — 사용자 요구사항 "합계 아래 삭제" 적용
+      (소스 정보는 페이지 하단 '데이터 처리 방식' 안내에서 별도 확인 가능)
     """
     sorted_years = sorted(years)
 
@@ -2264,29 +2265,11 @@ def build_da_composition_table(yearly_data: Dict, yearly_meta: Dict, years: List
                 totals_won[y] += vals[y]
                 any_total[y] = True
 
-    # 합계 행
-    total_row = ["합계"]  # v34: 인덴트/설명 제거
+    # 합계 행 (v35: 마지막 행으로 유지, 아래 추출 소스 행 제거)
+    total_row = ["합계"]
     for y in sorted_years:
         total_row.append(fu(totals_won[y]) if any_total[y] else "N/A")
     rows.append(total_row)
-
-    # 추출 소스 행 (연도별)
-    src_row = ["　추출 소스"]
-    for y in sorted_years:
-        meta = yearly_meta.get(y, {}) or {}
-        src = meta.get("source", "")
-        da_src = meta.get("da_source")
-        if da_src:
-            # 상장사 D&A 보강: "XBRL + 사업보고서 주석" 같은 조합 표기
-            display = f"{src} + {da_src}" if src else da_src
-        else:
-            # 단일 소스 (HTML 외감/XBRL)
-            display = src or "-"
-        # 값이 모두 None이면 '-' 표기
-        if not any_total[y]:
-            display = "-"
-        src_row.append(display)
-    rows.append(src_row)
 
     columns = [f"(단위: {unit_label})"] + [str(y) for y in sorted_years]
     return pd.DataFrame(rows, columns=columns)
@@ -3068,95 +3051,33 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # v34: 자동피팅 강화 — (1) autoSize → (2) 컬럼 합계 < container 폭일 때 잔여공간을 마지막 컬럼에 채움
         # 이전 이슈: "한솔오리온텍" 의 주소가 짧음 → minWidth=200이어도 grid 전체 폭보다 작아 테두리에 빈공간 생김
         # 이 JS가 주소컬럼 폭을 "container폭 - 다른컬럼합" 으로 강제 설정
+        # v35: 자동피팅 — sizeColumnsToFit() 우선 사용 (ag-grid 표준 API).
+        # 이전 v34 방식(autoSize → 잔여공간 계산 → setColumnWidth)이 "한솔오리온텍"에서
+        # 작동 안 함이 검증됨. sizeColumnsToFit은 컬럼들이 grid 폭을 정확히 채우도록
+        # 비율 분배하므로 단순하고 안정적.
         _auto_size_js = JsCode("""
         function(params) {
             var doFit = function() {
                 try {
-                    var allColumnIds = [];
-                    var cols = params.api.getColumns ? params.api.getColumns() : (params.columnApi ? params.columnApi.getAllColumns() : []);
-                    if (!cols || cols.length === 0) return;
-                    cols.forEach(function(column) {
-                        var cid = column.getColId ? column.getColId() : column.colId;
-                        if (cid && cid !== '_row_idx') {
-                            allColumnIds.push(cid);
-                        }
-                    });
-                    if (allColumnIds.length === 0) return;
-
-                    // 1단계: 콘텐츠 폭으로 자동 피팅
-                    var didAuto = false;
-                    if (params.api.autoSizeColumns) {
-                        try { params.api.autoSizeColumns(allColumnIds, false); didAuto = true; } catch(_) {}
+                    console.log('[v35 autoFit] doFit start');
+                    if (params.api.sizeColumnsToFit) {
+                        params.api.sizeColumnsToFit();
+                        console.log('[v35 autoFit] sizeColumnsToFit called');
+                        return;
                     }
-                    if (!didAuto && params.columnApi && params.columnApi.autoSizeColumns) {
-                        try { params.columnApi.autoSizeColumns(allColumnIds, false); didAuto = true; } catch(_) {}
+                    if (params.columnApi && params.columnApi.sizeColumnsToFit) {
+                        params.columnApi.sizeColumnsToFit();
+                        console.log('[v35 autoFit] sizeColumnsToFit via columnApi');
+                        return;
                     }
-
-                    // 2단계: container 전체 폭 측정 — 여러 경로 시도
-                    var gridWidth = 0;
-                    try {
-                        if (params.api.getGui) {
-                            var gridEl = params.api.getGui();
-                            if (gridEl) {
-                                // gridEl 자체 또는 부모 중 .ag-root-wrapper
-                                gridWidth = gridEl.clientWidth || 0;
-                                if (!gridWidth) {
-                                    var rootWrap = gridEl.querySelector ? gridEl.querySelector('.ag-root-wrapper') : null;
-                                    if (rootWrap) gridWidth = rootWrap.clientWidth || 0;
-                                }
-                                if (!gridWidth && gridEl.parentElement) {
-                                    gridWidth = gridEl.parentElement.clientWidth || 0;
-                                }
-                            }
-                        }
-                    } catch(_) {}
-
-                    if (gridWidth <= 0) return;
-
-                    // 컬럼 실제 폭 합계 계산
-                    var widthMap = {};
-                    var totalCol = 0;
-                    cols.forEach(function(column) {
-                        var cid = column.getColId ? column.getColId() : column.colId;
-                        if (cid && cid !== '_row_idx') {
-                            var w = column.getActualWidth ? column.getActualWidth() : 0;
-                            widthMap[cid] = w;
-                            totalCol += w;
-                        }
-                    });
-
-                    // 세로 스크롤바 공간 보정 (일반 ~17px) + 안전 마진
-                    var available = gridWidth - 2;  // grid 테두리 1px×2
-
-                    // 콘텐츠 좀아 → 마지막 컬럼(주소)을 잔여공간만큼 늘림
-                    if (totalCol < available) {
-                        var lastColId = allColumnIds[allColumnIds.length - 1];
-                        var lastW = widthMap[lastColId] || 0;
-                        var newLastW = lastW + (available - totalCol);
-                        // 신버전 setColumnWidth
-                        var done = false;
-                        if (params.api.setColumnWidth) {
-                            try { params.api.setColumnWidth(lastColId, newLastW); done = true; } catch(_) {}
-                        }
-                        if (!done && params.columnApi && params.columnApi.setColumnWidth) {
-                            try { params.columnApi.setColumnWidth(lastColId, newLastW); done = true; } catch(_) {}
-                        }
-                        // 폴백: applyColumnState (최신버전 API)
-                        if (!done && params.api.applyColumnState) {
-                            try {
-                                params.api.applyColumnState({
-                                    state: [{ colId: lastColId, width: newLastW }],
-                                    applyOrder: false,
-                                });
-                            } catch(_) {}
-                        }
-                    }
-                } catch(e) { console.log('autoSize error', e); }
+                    console.log('[v35 autoFit] sizeColumnsToFit not available');
+                } catch(e) {
+                    console.log('[v35 autoFit] error', e);
+                }
             };
-            // 세 시점 각각 호출 — 소량/대량 점을 모두 커버
             setTimeout(doFit, 50);
-            setTimeout(doFit, 250);
-            setTimeout(doFit, 600);  // v34: 가상 스크롤 초기화 완전 대기 (삼성전자 같은 대량 수천 건)
+            setTimeout(doFit, 300);
+            setTimeout(doFit, 800);
         }
         """)
         gb.configure_grid_options(
