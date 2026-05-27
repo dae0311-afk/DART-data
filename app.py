@@ -406,9 +406,26 @@ ACCOUNT_KEYWORDS = {
     "_교환사채": ["교환사채"],
 
     # ----- EBITDA 가산 (추수설명: BS 아닌 CF/주석) -----
-    "_유형자산감가상각비": ["감가상각비", "유형자산감가상각비"],
-    "_무형자산상각비": ["무형자산상각비", "무형자산상각"],
-    "_사용권자산상각비": ["사용권자산상각비"],
+    # v37: 산일전기 등 신규 상장사 변종 계정명 대응. 더 구체적인(긴) 키워드를 앞에 둠.
+    "_유형자산감가상각비": [
+        "유형자산감가상각비", "유형자산의감가상각비", "감가상각비",
+        "유형자산상각비", "감가상각",
+    ],
+    "_무형자산상각비": [
+        "무형자산상각비", "무형자산의상각비", "무형자산상각", "무형자산의상각",
+    ],
+    "_사용권자산상각비": [
+        "사용권자산감가상각비", "사용권자산상각비", "사용권자산의상각비",
+        "사용권자산상각", "사용권자산의상각",
+    ],
+    # v37: XBRL/HTML CF에 통합 표시("감가상각비및무형자산상각비")만 있는 경우 대응.
+    # _유형/_무형이 모두 None일 때 _유형에 합산값을 채워넣는 폴백으로 사용.
+    "_감가상각비_합산": [
+        "유형자산감가상각비및무형자산상각비",
+        "감가상각비및무형자산상각비",
+        "감가상각비와무형자산상각비",
+        "감가상각및무형자산상각비",
+    ],
 }
 
 # XBRL용 재무제표 구분
@@ -439,6 +456,7 @@ SJ_DIV_MAP = {
     "_유형자산감가상각비": ["CF"],
     "_무형자산상각비": ["CF"],
     "_사용권자산상각비": ["CF"],
+    "_감가상각비_합산": ["CF"],
 }
 
 # HTML 파싱용 재무제표 매핑 (어느 표에서 찾을지)
@@ -469,6 +487,7 @@ STATEMENT_OF = {
     "_유형자산감가상각비": "CF",
     "_무형자산상각비": "CF",
     "_사용권자산상각비": "CF",
+    "_감가상각비_합산": "CF",
 }
 
 # ====================================================================
@@ -642,10 +661,25 @@ def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optio
         return {key: None for key in ACCOUNT_KEYWORDS.keys()}
     amount_col = {0: "thstrm_amount", 1: "frmtrm_amount", 2: "bfefrmtrm_amount"}[year_offset]
     result = {}
+    matched_acc = {}  # key → matched account_nm (중복 감지용)
     for key, keywords in ACCOUNT_KEYWORDS.items():
         sj = SJ_DIV_MAP.get(key, ["IS", "BS", "CIS", "CF"])
         row = find_in_xbrl(df, keywords, sj)
-        result[key] = to_number(row.get(amount_col)) if row is not None else None
+        if row is not None:
+            result[key] = to_number(row.get(amount_col))
+            matched_acc[key] = str(row.get("account_nm", ""))
+        else:
+            result[key] = None
+
+    # v37: D&A 합산 행 중복 매칭 보정.
+    # 산일전기처럼 XBRL CF에 "감가상각비및무형자산상각비" 단일 행만 있으면
+    # _유형/_무형/_합산이 모두 같은 행을 가리켜 3중 카운트됨 → 합산만 남기고 개별 None화.
+    combined_acc = matched_acc.get("_감가상각비_합산", "")
+    if combined_acc and result.get("_감가상각비_합산") is not None:
+        if matched_acc.get("_유형자산감가상각비") == combined_acc:
+            result["_유형자산감가상각비"] = None
+        if matched_acc.get("_무형자산상각비") == combined_acc:
+            result["_무형자산상각비"] = None
     return result
 
 
@@ -1955,7 +1989,11 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
         da_missing_years = []
         for y in years:
             d = yearly_data.get(y) or {}
-            if all(d.get(k) is None for k in ("_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비")):
+            # v37: _감가상각비_합산(XBRL 합산 행)이 있으면 EBITDA 계산 가능 → 보강 불필요
+            if all(d.get(k) is None for k in (
+                "_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비",
+                "_감가상각비_합산",
+            )):
                 # 최소 한개 매출 또는 영업이익이 있어야 보강 의미 있음 (완전 실패 제외)
                 if d.get("매출액") is not None or d.get("영업이익") is not None:
                     da_missing_years.append(y)
@@ -2204,6 +2242,13 @@ def compute_yearly_metrics(yearly_data: Dict, yearly_meta: Dict, years: List[int
         te = _val_won(yearly_data, yearly_meta, y, "자본총계")
         da = _sum_won(yearly_data, yearly_meta, y,
                       ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"])
+        # v37: XBRL/HTML CF에 합산 행("감가상각비및무형자산상각비")만 있고 개별 항목이
+        # 없는 경우(산일전기 등 신규 상장사 패턴) 합산값으로 폴백.
+        if da is None:
+            combined = _val_won(yearly_data, yearly_meta, y, "_감가상각비_합산")
+            if combined is not None:
+                rou = _val_won(yearly_data, yearly_meta, y, "_사용권자산상각비")
+                da = combined + (rou or 0)
         cash_static = _sum_won(yearly_data, yearly_meta, y, _CASH_KEYS)
         cash_bd = _other_fa_cash_like_won(yearly_meta, y)
         if cash_static is None and cash_bd is None:
