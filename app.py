@@ -1835,7 +1835,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
     # 주의: 주석 표의 값은 통상 천원 단위 → unit_scale 별도 적용.
     # ============================================================
     da_keys = ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"]
-    da_missing = [k for k in da_keys if result_data.get(k) is None]
+    # v38: 값이 0인 경우도 누락으로 간주 — HTML CF 0값 행 매칭 케이스 (EBITDA=op_income 방지)
+    da_missing = [k for k in da_keys if not result_data.get(k)]
     da_fallback_used = False
     da_fallback_info = {}
     if da_missing:
@@ -1859,7 +1860,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
                 "_사용권자산상각비": "사용권자산상각비",
             }
             for r_key, n_key in mapping.items():
-                if result_data.get(r_key) is None:
+                # v38: 0 값도 누락 취급 (HTML CF 0값 잘못 매칭 보정)
+                if not result_data.get(r_key):
                     info = notes_da.get(n_key)
                     if info is not None:
                         # 주석에서 가져온 값은 원 단위(value_in_won).
@@ -1885,7 +1887,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
                                 d["발견여부"] = "✓ (주석 fallback)"
                                 break
             # 만약 개별 항목이 다 누락이고 '감가상각비_합산'만 있으면
-            if all(result_data.get(k) is None for k in ["_유형자산감가상각비", "_무형자산상각비"]):
+            # v38: 0 값도 누락 취급
+            if all(not result_data.get(k) for k in ["_유형자산감가상각비", "_무형자산상각비"]):
                 combined = notes_da.get("감가상각비_합산")
                 if combined is not None:
                     won_value = combined["value_in_won"]
@@ -1990,10 +1993,14 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
         for y in years:
             d = yearly_data.get(y) or {}
             # v37: _감가상각비_합산(XBRL 합산 행)이 있으면 EBITDA 계산 가능 → 보강 불필요
-            if all(d.get(k) is None for k in (
-                "_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비",
-                "_감가상각비_합산",
-            )):
+            # v38: D&A 값이 있더라도 합이 0이면 (XBRL '감가상각' 약한 키워드가 0값 행에
+            # 매칭된 케이스 등) 의미 있는 D&A가 아니므로 주석 보강을 다시 시도.
+            da_keys_listed = (
+                "_유형자산감가상각비", "_무형자산상각비",
+                "_사용권자산상각비", "_감가상각비_합산",
+            )
+            da_vals = [d.get(k) for k in da_keys_listed if d.get(k) is not None]
+            if (not da_vals) or sum(da_vals) == 0:
                 # 최소 한개 매출 또는 영업이익이 있어야 보강 의미 있음 (완전 실패 제외)
                 if d.get("매출액") is not None or d.get("영업이익") is not None:
                     da_missing_years.append(y)
@@ -2014,8 +2021,9 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                 updated = True
             # v37: 개별 감가/무형이 모두 누락이면 '감가상각비_합산' (감가+무형 합산 행) 폴백.
             # 산일전기 등 주석에 합산 행만 있는 케이스 → EBITDA 계산 실패 방지.
-            if (yearly_data[y].get("_유형자산감가상각비") is None
-                and yearly_data[y].get("_무형자산상각비") is None):
+            # v38: 0 값도 누락으로 간주 (XBRL 0값 행 잘못 매칭 케이스 보정).
+            if (not yearly_data[y].get("_유형자산감가상각비")
+                and not yearly_data[y].get("_무형자산상각비")):
                 combined = da.get("감가상각비_합산")
                 if combined and combined.get("value_in_won") is not None:
                     yearly_data[y]["_유형자산감가상각비"] = combined["value_in_won"]
@@ -2244,9 +2252,10 @@ def compute_yearly_metrics(yearly_data: Dict, yearly_meta: Dict, years: List[int
                       ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"])
         # v37: XBRL/HTML CF에 합산 행("감가상각비및무형자산상각비")만 있고 개별 항목이
         # 없는 경우(산일전기 등 신규 상장사 패턴) 합산값으로 폴백.
+        # v38: combined == 0 (잘못 매칭된 0값 행)은 무시 → da를 None으로 유지
         if da is None:
             combined = _val_won(yearly_data, yearly_meta, y, "_감가상각비_합산")
-            if combined is not None:
+            if combined:
                 rou = _val_won(yearly_data, yearly_meta, y, "_사용권자산상각비")
                 da = combined + (rou or 0)
         cash_static = _sum_won(yearly_data, yearly_meta, y, _CASH_KEYS)
