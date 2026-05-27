@@ -20,6 +20,13 @@ import requests
 import streamlit as st
 import OpenDartReader
 
+# v28: AgGrid — 셀 클릭 시 행 자동 선택을 위해 도입
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+    _AGGRID_AVAILABLE = True
+except Exception:
+    _AGGRID_AVAILABLE = False
+
 # ====================================================================
 # 0) 페이지 설정
 # ====================================================================
@@ -2727,6 +2734,7 @@ if search_btn:
     st.session_state.pop("company_table", None)
     st.session_state.pop("company_radio", None)
     st.session_state.pop("company_dataframe", None)
+    st.session_state.pop("company_aggrid", None)
     st.session_state.pop("company_select_idx", None)
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
@@ -2736,9 +2744,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         unsafe_allow_html=True,
     )
 
-    # v27: st.dataframe 체크박스 선택 원복
-    # - 컴럼: 회사명, 대표이사, 주소 (사용자 요구 — 기업코드/산업코드 제거)
-    # - 체크박스(좌측 selector)로 행 선택 → selection_mode="single-row"
+    # v28: AgGrid 도입 — 셀 클릭 시 행 전체 자동 선택 + 체크박스 표시
+    # - 컬럼: 회사명, 대표이사, 주소 (기업코드/산업코드 제거)
+    # - 어느 셀이든 클릭하면 그 행 체크박스가 자동 토글됨
     # - 선택 전에는 데이터 추출 버튼 disabled, 선택 후 primary(빨간색)
     _display_col_map = {
         "corp_name": "회사명",
@@ -2747,31 +2755,87 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     }
     display_cols = [c for c in _display_col_map.keys() if c in companies.columns]
     if display_cols:
-        df_show = companies[display_cols].rename(columns=_display_col_map)
+        df_show = companies[display_cols].rename(columns=_display_col_map).reset_index(drop=True)
     else:
-        df_show = companies
+        df_show = companies.reset_index(drop=True)
 
-    event = st.dataframe(
-        df_show,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="company_dataframe",
-    )
+    # 원본 idx 매핑용 (선택된 행 → companies.iloc[idx])
+    df_show_with_idx = df_show.copy()
+    df_show_with_idx["_row_idx"] = range(len(df_show_with_idx))
 
-    # 검색 결과 1건이면 자동 선택 (체크박스 클릭 생략)
-    if len(companies) == 1:
-        selected_idx = 0
+    selected_idx = None
+
+    if _AGGRID_AVAILABLE:
+        gb = GridOptionsBuilder.from_dataframe(df_show_with_idx)
+        # 체크박스 + 셀 클릭 시 행 선택
+        gb.configure_selection(
+            selection_mode="single",
+            use_checkbox=True,
+            header_checkbox=False,
+            rowMultiSelectWithClick=False,
+            suppressRowDeselection=False,
+        )
+        # 첫 컬럼(회사명)에 체크박스 표시
+        gb.configure_column("회사명", checkboxSelection=True, headerCheckboxSelection=False, width=180)
+        gb.configure_column("대표이사", width=120)
+        gb.configure_column("주소", flex=1)
+        gb.configure_column("_row_idx", hide=True)
+        # 셀 클릭 시 행 선택 토글되도록 설정
+        gb.configure_grid_options(
+            suppressCellFocus=False,
+            rowSelection="single",
+            suppressRowClickSelection=False,  # 셀(행) 클릭으로 선택 가능
+        )
+        grid_options = gb.build()
+
+        grid_response = AgGrid(
+            df_show_with_idx,
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            data_return_mode=DataReturnMode.AS_INPUT,
+            fit_columns_on_grid_load=True,
+            allow_unsafe_jscode=True,
+            height=min(60 + 35 * max(len(df_show_with_idx), 1), 400),
+            theme="streamlit",
+            key="company_aggrid",
+        )
+
+        # 검색 결과 1건이면 자동 선택
+        if len(companies) == 1:
+            selected_idx = 0
+        else:
+            sel_rows = grid_response.get("selected_rows")
+            try:
+                if sel_rows is None:
+                    selected_idx = None
+                elif isinstance(sel_rows, pd.DataFrame):
+                    if not sel_rows.empty and "_row_idx" in sel_rows.columns:
+                        selected_idx = int(sel_rows.iloc[0]["_row_idx"])
+                elif isinstance(sel_rows, list) and len(sel_rows) > 0:
+                    selected_idx = int(sel_rows[0].get("_row_idx", 0))
+            except Exception:
+                selected_idx = None
     else:
-        try:
-            sel_rows = event.selection.rows  # type: ignore[attr-defined]
-        except Exception:
-            sel_rows = []
-        selected_idx = sel_rows[0] if sel_rows else None
+        # AgGrid 미설치 시 폴백 — 기존 st.dataframe 체크박스 방식
+        event = st.dataframe(
+            df_show,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="company_dataframe",
+        )
+        if len(companies) == 1:
+            selected_idx = 0
+        else:
+            try:
+                sel_rows = event.selection.rows  # type: ignore[attr-defined]
+            except Exception:
+                sel_rows = []
+            selected_idx = sel_rows[0] if sel_rows else None
 
     if selected_idx is None:
-        st.caption("⬆️ 표 좌측 체크박스를 클릭해 회사를 선택하세요.")
+        st.caption("⬆️ 표에서 회사를 클릭해 선택하세요. (셀 또는 체크박스 클릭)")
         st.button("데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
         st.stop()
 
