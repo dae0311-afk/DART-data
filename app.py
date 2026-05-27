@@ -28,6 +28,37 @@ except Exception:
     _AGGRID_AVAILABLE = False
     JsCode = None  # type: ignore
 
+
+# v32: 모든 st.dataframe에 적용 — 숫자 컬럼 우측 정렬 (문자열 콤마 포함)
+def _df_right_align_numbers(df):
+    """DataFrame의 숫자적 컬럼(콤마/퍼센트 포함)을 우측 정렬해서 Styler 반환.
+    st.dataframe(_df_right_align_numbers(df), ...)로 사용.
+    """
+    import re as _re
+    if df is None or df.empty:
+        return df
+    # 숫자가 들어가는 컬럼 판별: 첫 컬럼(계정명)을 제외한 나머지
+    cols_to_align = list(df.columns[1:])
+    if not cols_to_align:
+        return df
+    try:
+        styler = df.style.set_properties(
+            subset=cols_to_align,
+            **{"text-align": "right"}
+        ).set_table_styles([
+            {"selector": f"th.col_heading.level0",
+             "props": [("text-align", "right")]},
+        ], overwrite=False)
+        # 헤더도 우측 정렬 (본문과 일치)
+        for col in cols_to_align:
+            styler = styler.set_table_styles(
+                {col: [{"selector": "th", "props": [("text-align", "right")]}]},
+                overwrite=False
+            )
+        return styler
+    except Exception:
+        return df
+
 # ====================================================================
 # 0) 페이지 설정
 # ====================================================================
@@ -2269,28 +2300,32 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         hovertemplate=f"%{{x}}<br>{line_name}: %{{text}}<extra></extra>",
     ))
 
-    # 바 y축 range — 명시 할당 ([0, max*1.30])
+    # 바 y축 range — v32: 바가 전체 차트의 2/3(=67%) 이하만 차지하도록 제한
+    # range=[0, max*1.55]이면 바 max는 1/1.55 = 64.5% 위치 → 2/3 미만 보장
     _bar_vals = [v for v in ys_bar if v is not None]
     if _bar_vals:
         _b_max = max(_bar_vals)
         _b_min = min(_bar_vals + [0])
         if _b_min < 0:
-            _b_pad = (_b_max - _b_min) * 0.20
-            bar_yrange = [_b_min - _b_pad, _b_max + _b_pad]
+            # 음수 포함 시: 전체 range를 양음 합쳐 잡고 양수쪽이 2/3 미만이 되도록
+            _span = (_b_max - _b_min)
+            bar_yrange = [_b_min - _span * 0.20, _b_max * 1.55]
         else:
-            bar_yrange = [0, _b_max * 1.30]  # 위로 30% 여백 (레이블 공간)
+            bar_yrange = [0, _b_max * 1.55]  # 바 최고점이 전체의 64.5% → 2/3 미만
     else:
         bar_yrange = [0, 1]
 
-    # 라인 y축 range — 바와 겹치지 않도록 상단으로 밀어냄
-    # 트릭: 라인 range를 크게 잡아 라인이 상단 30% 구간에만 나타나도록.
+    # 라인 y축 range — v32: 라인이 항상 바차트+레이블 위(상단 25-30%)에만 그려지도록
+    # 트릭: 라인 range의 하단을 매우 낮게 잡아 라인 도메인이 상단 좁은 구간에 위치
     _line_vals = [v for v in ys_line if v is not None]
     if _line_vals:
         _l_min = min(_line_vals)
         _l_max = max(_line_vals)
         _l_span = max(_l_max - _l_min, abs(_l_max) * 0.5, 5)
-        # 라인 도메인을 상단 ~30%에 배치: 하단은 매우 낮게
-        line_yrange = [_l_min - _l_span * 3.0, _l_max + _l_span * 0.5]
+        # 라인 최소값이 화면 상단 ~75% 위치에 오도록 → 라인은 75~95% 구간에만 그려짐
+        # range=[l_min - span*4.0, l_max + span*0.3] → l_min은 (4.0/4.3)=93% 위치
+        # 즉 라인의 가장 낮은 점도 차트 상단 7% 영역에 위치 → 바(최대 64.5%)와 확실히 분리
+        line_yrange = [_l_min - _l_span * 4.0, _l_max + _l_span * 0.3]
     else:
         line_yrange = [0, 1]
 
@@ -2792,13 +2827,15 @@ if search_btn:
         )
         st.stop()
     st.session_state["companies"] = companies
-    # v27: 이전 검색 잔존 상태 초기화 — 새 검색 시 체크박스 선택 리셋
+    # v27: 이전 검색 잔존 상태 초기화 — 새 검색 시 선택 리셋
     st.session_state.pop("auto_extract", None)
     st.session_state.pop("company_table", None)
     st.session_state.pop("company_radio", None)
     st.session_state.pop("company_dataframe", None)
     st.session_state.pop("company_aggrid", None)
     st.session_state.pop("company_select_idx", None)
+    # v32: AgGrid key를 완전히 새로 부여해 이전 선택 완전 리프레시
+    st.session_state["search_counter"] = st.session_state.get("search_counter", 0) + 1
 
 if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
@@ -2874,8 +2911,13 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             </style>
         """, unsafe_allow_html=True)
 
+        # v32: AgGrid cellStyle/headerClass로 직접 폰트 적용 (CSS 주입 불안정)
+        _cell_style_14 = {"font-size": "14px", "line-height": "30px",
+                          "padding-left": "8px", "padding-right": "8px",
+                          "border-right": "none"}
+
         gb = GridOptionsBuilder.from_dataframe(df_show_with_idx)
-        # v31: 체크박스 없이 셀 클릭만으로 선택
+        # 체크박스 없이 셀 클릭만으로 선택
         gb.configure_selection(
             selection_mode="single",
             use_checkbox=False,
@@ -2883,54 +2925,68 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             rowMultiSelectWithClick=False,
             suppressRowDeselection=False,
         )
-        # v31: 컬럼 폭은 자동 피팅 — 내용에 맞춰 줄바꿈 없는 최소폭
-        # 기본값: 너비 자동계산, 내용에 맞춰 면늨(suppressSizeToFit)
+        # 컬럼 설정 — cellStyle에 폰트 직접 넣음 (CSS 주입 안 되는 경우 대비)
         for _col in ["회사명", "대표이사", "주소"]:
             gb.configure_column(
                 _col,
                 wrapText=False,
                 autoHeight=False,
                 resizable=True,
-                # min/max만 설정, width는 fit_columns_on_grid_load로 자동 계산
                 minWidth=80,
+                cellStyle=_cell_style_14,
             )
         gb.configure_column("_row_idx", hide=True)
-        # 주소 컬럼은 나머지 공간 차지 (flex=1)
-        gb.configure_column("주소", flex=1, wrapText=False, autoHeight=False, minWidth=200)
+        # 주소 컬럼: flex=1 제거 — 자동 피팅에 맡김 (이전: 주소가 공간 독점해서 자동피팅이 무효화)
+        gb.configure_column("주소", wrapText=False, autoHeight=False, minWidth=200,
+                            cellStyle=_cell_style_14)
 
-        # v31: 최종 렌더링 후 컬럼 폭 자동 피팅 — 줄바꿈 없는 최소 폭
-        # 주소는 flex=1이라 나머지 공간 차지
+        # v32: 자동 피팅 — streamlit-aggrid 최신 버전 호환성 위해 이중 시도
+        # 1. params.api.autoSizeColumns(allColumnIds) (신버전)
+        # 2. params.columnApi.autoSizeColumns(allColumnIds) (구버전)
         _auto_size_js = JsCode("""
         function(params) {
-            const allColumnIds = [];
-            params.columnApi.getAllColumns().forEach(function(column) {
-                if (column.colId !== '_row_idx' && column.colId !== '주소') {
-                    allColumnIds.push(column.colId);
+            try {
+                var allColumnIds = [];
+                var cols = params.api.getColumns ? params.api.getColumns() : params.columnApi.getAllColumns();
+                cols.forEach(function(column) {
+                    var cid = column.getColId ? column.getColId() : column.colId;
+                    if (cid !== '_row_idx') {
+                        allColumnIds.push(cid);
+                    }
+                });
+                if (params.api.autoSizeColumns) {
+                    params.api.autoSizeColumns(allColumnIds, false);
+                } else if (params.columnApi && params.columnApi.autoSizeColumns) {
+                    params.columnApi.autoSizeColumns(allColumnIds, false);
                 }
-            });
-            params.columnApi.autoSizeColumns(allColumnIds, false);
+            } catch(e) { console.log('autoSize error', e); }
         }
         """)
         gb.configure_grid_options(
             suppressCellFocus=True,
             rowSelection="single",
             suppressRowClickSelection=False,
-            rowHeight=30,        # v31: 행 높이 st.dataframe 수준
+            rowHeight=30,
             headerHeight=32,
             onFirstDataRendered=_auto_size_js,
+            onGridReady=_auto_size_js,  # v32: 이중 호출
         )
         grid_options = gb.build()
+
+        # v32: search_counter로 key 동적 부여 → 새 검색 시 완전 리프레시
+        _search_count = st.session_state.get("search_counter", 0)
+        _aggrid_key = f"company_aggrid_{_search_count}"
 
         grid_response = AgGrid(
             df_show_with_idx,
             gridOptions=grid_options,
             update_mode=GridUpdateMode.SELECTION_CHANGED,
             data_return_mode=DataReturnMode.AS_INPUT,
-            fit_columns_on_grid_load=True,  # 주소 flex=1이 나머지 공간 차지
+            fit_columns_on_grid_load=False,  # v32: 자동 피팅 적용 위해 해제
             allow_unsafe_jscode=True,
             height=min(50 + 30 * max(len(df_show_with_idx), 1), 400),
             theme="streamlit",
-            key="company_aggrid",
+            key=_aggrid_key,
         )
 
         # 검색 결과 1건이면 자동 선택
@@ -3066,9 +3122,15 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         # -------- 요약 재무제표 --------
         # v31: 원래 st.dataframe 형태로 원복 (사용자 요구)
+        # v32: 수직 스크롤 없이 전체 표시 + 숫자 우측 정렬
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
-        st.dataframe(template_df, use_container_width=True, hide_index=True)
+        _tpl_height = 38 + 35 * max(len(template_df), 1)  # 헤더 38 + 행당 35
+        st.dataframe(
+            _df_right_align_numbers(template_df),
+            use_container_width=True, hide_index=True,
+            height=_tpl_height,
+        )
         st.caption(
             f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
@@ -3110,7 +3172,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
-            st.dataframe(cash_comp_df, use_container_width=True, hide_index=True)
+            _h = 38 + 35 * max(len(cash_comp_df), 1)
+            st.dataframe(_df_right_align_numbers(cash_comp_df), use_container_width=True, hide_index=True, height=_h)
             st.caption(
                 "· 요약표 '현금성자산' = 이 구성표 합계.\n"
                 "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
@@ -3118,7 +3181,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             )
         with col_b:
             st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
-            st.dataframe(debt_comp_df, use_container_width=True, hide_index=True)
+            _h = 38 + 35 * max(len(debt_comp_df), 1)
+            st.dataframe(_df_right_align_numbers(debt_comp_df), use_container_width=True, hide_index=True, height=_h)
             st.caption(
                 "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
                 "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
@@ -3126,7 +3190,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
         # -------- D&A 구성표 (차입금 구성 하단) --------
         st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
-        st.dataframe(da_comp_df, use_container_width=True, hide_index=True)
+        _h = 38 + 35 * max(len(da_comp_df), 1)
+        st.dataframe(_df_right_align_numbers(da_comp_df), use_container_width=True, hide_index=True, height=_h)
         st.caption(
                 "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
                 "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
