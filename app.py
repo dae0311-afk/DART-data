@@ -29,6 +29,34 @@ except Exception:
     JsCode = None  # type: ignore
 
 
+# v33: 구성표/요약표의 "N/A", "0", "(0)", "" 등 빈값 → "-" 표기 통일
+def _df_dash_for_empty(df):
+    """DataFrame 복사본을 반환하며 첨 컬럼을 제외한 나머지의 '빈값'을 '-'로 교체.
+    빈값 정의: None, '', 'N/A', '0', '0.0', '(0)' 등.
+    숫자형 컬럼(명시 안됨)이지만 파일은 이미 문자열로 포맷된 상태임(format_unit 적용 완료).
+    """
+    if df is None or df.empty:
+        return df
+    import re as _re
+    out = df.copy()
+    cols = list(out.columns[1:])
+    # 0 판별 정규식: "0", "0.0", "0.00", "(0)", "(0.0)" 등
+    _zero_pat = _re.compile(r"^\(?0+(?:\.0+)?\)?$")
+    def _convert(v):
+        if v is None:
+            return "-"
+        s = str(v).strip()
+        if s == "" or s.upper() == "N/A":
+            return "-"
+        # 메타 설명 행("[···]" 등)은 원래부터 빈 문자열이므로 이미 "-" 돌아감
+        if _zero_pat.match(s):
+            return "-"
+        return v
+    for c in cols:
+        out[c] = out[c].map(_convert)
+    return out
+
+
 # v32: 모든 st.dataframe에 적용 — 숫자 컬럼 우측 정렬 (문자열 콤마 포함)
 def _df_right_align_numbers(df):
     """DataFrame의 숫자적 컬럼(콤마/퍼센트 포함)을 우측 정렬해서 Styler 반환.
@@ -2366,7 +2394,7 @@ def _make_combo_chart(title: str, sorted_years: List[int],
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=1.08, xanchor="center", x=0.5,
                     bgcolor="rgba(0,0,0,0)", font=dict(color=BLACK, size=FONT_SIZE)),
-        bargap=0.65,
+        bargap=0.325,  # v33: 이전 0.65 → 절반으로 줄임 (x축 항목 간격 축소, 바 폭 더 크게)
         font=dict(color=BLACK, size=FONT_SIZE),
         dragmode=False,
         xaxis=dict(
@@ -2940,26 +2968,68 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         gb.configure_column("주소", wrapText=False, autoHeight=False, minWidth=200,
                             cellStyle=_cell_style_14)
 
-        # v32: 자동 피팅 — streamlit-aggrid 최신 버전 호환성 위해 이중 시도
-        # 1. params.api.autoSizeColumns(allColumnIds) (신버전)
-        # 2. params.columnApi.autoSizeColumns(allColumnIds) (구버전)
+        # v33: 자동피팅 강화 — 이브릿지(결과 소량) vs 삼성전자(결과 다량, 가상스크롤) 둘 다 작동하도록
+        # 1. setTimeout 100ms 지연 → 가상 스크롤 셀이 렌더링 완료 후 측정
+        # 2. autoSize 후 컬럼 합계 폭 < grid 폭이면 마지막 컬럼(주소)을 남은 공간만큼 늘림
+        #    → 표 내부가 테두리보다 좁아지는 현상 해소
+        # 3. onGridReady + onFirstDataRendered + onGridSizeChanged 세 훅 이벤트 모두 트리거
         _auto_size_js = JsCode("""
         function(params) {
-            try {
-                var allColumnIds = [];
-                var cols = params.api.getColumns ? params.api.getColumns() : params.columnApi.getAllColumns();
-                cols.forEach(function(column) {
-                    var cid = column.getColId ? column.getColId() : column.colId;
-                    if (cid !== '_row_idx') {
-                        allColumnIds.push(cid);
+            var doFit = function() {
+                try {
+                    var allColumnIds = [];
+                    var cols = params.api.getColumns ? params.api.getColumns() : (params.columnApi ? params.columnApi.getAllColumns() : []);
+                    if (!cols) return;
+                    cols.forEach(function(column) {
+                        var cid = column.getColId ? column.getColId() : column.colId;
+                        if (cid && cid !== '_row_idx') {
+                            allColumnIds.push(cid);
+                        }
+                    });
+                    // 1단계: 콘텐츠 폭으로 자동 피팅
+                    if (params.api.autoSizeColumns) {
+                        params.api.autoSizeColumns(allColumnIds, false);
+                    } else if (params.columnApi && params.columnApi.autoSizeColumns) {
+                        params.columnApi.autoSizeColumns(allColumnIds, false);
                     }
-                });
-                if (params.api.autoSizeColumns) {
-                    params.api.autoSizeColumns(allColumnIds, false);
-                } else if (params.columnApi && params.columnApi.autoSizeColumns) {
-                    params.columnApi.autoSizeColumns(allColumnIds, false);
-                }
-            } catch(e) { console.log('autoSize error', e); }
+                    // 2단계: grid 전체 폭 대비 컬럼 합계를 계산해 부족 공간을 마지막 컬럼에 할당
+                    try {
+                        var gridEl = (params.api.getGui ? params.api.getGui() : null);
+                        var gridWidth = gridEl ? gridEl.clientWidth : 0;
+                        if (gridWidth > 0 && allColumnIds.length > 0) {
+                            var totalCol = 0;
+                            cols.forEach(function(column) {
+                                var cid = column.getColId ? column.getColId() : column.colId;
+                                if (cid && cid !== '_row_idx') {
+                                    totalCol += (column.getActualWidth ? column.getActualWidth() : 0);
+                                }
+                            });
+                            // 세로 스크롤바 공간 약 18px 보정
+                            var available = gridWidth - 20;
+                            if (totalCol < available) {
+                                var lastColId = allColumnIds[allColumnIds.length - 1];
+                                var lastCol = null;
+                                cols.forEach(function(column) {
+                                    var cid = column.getColId ? column.getColId() : column.colId;
+                                    if (cid === lastColId) lastCol = column;
+                                });
+                                if (lastCol) {
+                                    var lastW = lastCol.getActualWidth ? lastCol.getActualWidth() : 0;
+                                    var newLastW = lastW + (available - totalCol);
+                                    if (params.api.setColumnWidth) {
+                                        params.api.setColumnWidth(lastColId, newLastW);
+                                    } else if (params.columnApi && params.columnApi.setColumnWidth) {
+                                        params.columnApi.setColumnWidth(lastColId, newLastW);
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e2) { /* fill-remaining error ignored */ }
+                } catch(e) { console.log('autoSize error', e); }
+            };
+            // 가상 스크롤 셀 렌더링 완료 대기 (삼성전자 같은 대량 결과 대응)
+            setTimeout(doFit, 50);
+            setTimeout(doFit, 200);  // 이중 시도: 첫 호출이 가상화 이전이면 200ms 뒤 재호출
         }
         """)
         gb.configure_grid_options(
@@ -2969,7 +3039,8 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             rowHeight=30,
             headerHeight=32,
             onFirstDataRendered=_auto_size_js,
-            onGridReady=_auto_size_js,  # v32: 이중 호출
+            onGridReady=_auto_size_js,
+            onGridSizeChanged=_auto_size_js,  # v33: 추가
         )
         grid_options = gb.build()
 
@@ -3173,7 +3244,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         with col_a:
             st.markdown("<div class='hpe-section'>현금성자산 구성</div>", unsafe_allow_html=True)
             _h = 38 + 35 * max(len(cash_comp_df), 1)
-            st.dataframe(_df_right_align_numbers(cash_comp_df), use_container_width=True, hide_index=True, height=_h)
+            st.dataframe(_df_right_align_numbers(_df_dash_for_empty(cash_comp_df)), use_container_width=True, hide_index=True, height=_h)
             st.caption(
                 "· 요약표 '현금성자산' = 이 구성표 합계.\n"
                 "· 기타유동·비유동금융자산은 외감사 통합 계정: 정기예금·MMF·단기금융상품 외에 대여금·보증금·파생상품 포함 가능 → 주석 확인 후 가감 필요.\n"
@@ -3182,7 +3253,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         with col_b:
             st.markdown("<div class='hpe-section'>차입금 구성</div>", unsafe_allow_html=True)
             _h = 38 + 35 * max(len(debt_comp_df), 1)
-            st.dataframe(_df_right_align_numbers(debt_comp_df), use_container_width=True, hide_index=True, height=_h)
+            st.dataframe(_df_right_align_numbers(_df_dash_for_empty(debt_comp_df)), use_container_width=True, hide_index=True, height=_h)
             st.caption(
                 "· 요약표 '총차입금' = 이 구성표 합계 (리스부채, CB/BW/EB 포함).\n"
                 "· IFRS 16 미적용 기업은 리스부채 0 → valuation 시 별도 조정 필요."
@@ -3191,7 +3262,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # -------- D&A 구성표 (차입금 구성 하단) --------
         st.markdown("<div class='hpe-section'>D&A 구성 (EBITDA 가산항)</div>", unsafe_allow_html=True)
         _h = 38 + 35 * max(len(da_comp_df), 1)
-        st.dataframe(_df_right_align_numbers(da_comp_df), use_container_width=True, hide_index=True, height=_h)
+        st.dataframe(_df_right_align_numbers(_df_dash_for_empty(da_comp_df)), use_container_width=True, hide_index=True, height=_h)
         st.caption(
                 "· EBITDA = 영업이익 + D&A 합계 (유형 감가상각비 + 무형 상각비 + 사용권자산 감가상각비).\n"
                 "· '추출 소스' 행: 상장사 XBRL CF는 개별 D&A가 없어 사업보고서 주석에서 보강(`XBRL + 사업보고서 주석`). 외감 비상장사는 감사보고서 CF/주석에서 직접 추출.\n"
