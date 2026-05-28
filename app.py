@@ -350,7 +350,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴</h2>
+        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v38</span></h2>
         <div class="hpe-sub">
             Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
         </div>
@@ -370,7 +370,15 @@ REPRT_CODE_ANNUAL = "11011"  # 사업보고서
 ACCOUNT_KEYWORDS = {
     "매출액": ["매출액", "수익(매출액)", "영업수익", "매출", "수익"],
     "영업이익": ["영업이익", "영업이익(손실)", "영업손실"],
-    "당기순이익": ["당기순이익", "당기순이익(손실)", "당기순손익", "분기순이익", "반기순이익"],
+    "당기순이익": [
+        "당기순이익", "당기순이익(손실)", "당기순손실(이익)", "당기순손실", "당기순손익",
+        "당기의순이익", "당기의순손실", "당기의순이익(손실)",
+        "법인세비용차감후순이익", "법인세비용차감후순손실",
+        "법인세비용차감후당기순이익", "법인세비용차감후당기순손실",
+        "법인세후순이익", "법인세후순손실",
+        "분기순이익", "분기순손실", "반기순이익", "반기순손실",
+        "연결당기순이익", "연결당기순손실",
+    ],
     "자산총계": ["자산총계", "자산 총계"],
     "현금성자산": ["현금및현금성자산", "현금 및 현금성자산"],
     "부채총계": ["부채총계", "부채 총계"],
@@ -534,10 +542,22 @@ def to_number(x) -> Optional[int]:
     # 대시 표기(“-” 외 유니코드 변종 포함)는 0으로 해석
     if s in _DASH_TOKENS:
         return 0
+    # 한국 감사보고서의 음수 마커: △ ▲ ▽ ▼ (앞뒤/괄호 안 모두 가능)
+    # 예: "△1,234", "▲(1,234)", "(△)1,234", "1,234△"
+    neg_from_triangle = False
+    for tri in ("△", "▲", "▽", "▼"):
+        if tri in s:
+            neg_from_triangle = True
+            s = s.replace(tri, "")
+    # 트라이앵글 제거 후 잔여 빈 괄호 ("()1,234" → "1,234") 정리
+    s = re.sub(r"\(\s*\)|\[\s*\]", "", s)
     try:
         if s.startswith("(") and s.endswith(")"):
             s = "-" + s[1:-1]
-        return int(float(s))
+        v = int(float(s))
+        if neg_from_triangle and v > 0:
+            v = -v
+        return v
     except (ValueError, TypeError):
         return None
 
@@ -656,6 +676,43 @@ def fetch_xbrl_finstate(_dart, corp_code: str, year: int, fs_div: str) -> Option
         return None
 
 
+def _find_all_in_xbrl(df: pd.DataFrame, keywords: list, sj_filter: list) -> List[pd.Series]:
+    """find_in_xbrl 대신 매칭되는 모든 row 반환 (account_nm 길이 짧은 순).
+
+    K-IFRS XBRL은 같은 계정이 IS/CIS 등 여러 sj_div에 중복 등재되는 경우가 있고,
+    그 중 일부 row는 frmtrm/bfefrmtrm_amount 가 비어있을 수 있다. 호출측이 행을
+    순회하며 원하는 amount 컬럼이 채워진 첫 행을 고를 수 있도록 함.
+    """
+    if df is None or df.empty:
+        return []
+    work = df.copy()
+    if "sj_div" in work.columns:
+        work = work[work["sj_div"].isin(sj_filter)]
+    if work.empty:
+        return []
+    exact_rows: List[pd.Series] = []
+    for kw in keywords:
+        m = work[work["account_nm"] == kw]
+        for _, r in m.iterrows():
+            exact_rows.append(r)
+    pattern = "|".join([re.escape(k) for k in keywords])
+    partial = work[work["account_nm"].astype(str).str.contains(pattern, na=False, regex=True)]
+    partial = partial.copy()
+    partial["_len"] = partial["account_nm"].astype(str).str.len()
+    partial = partial.sort_values("_len")
+    partial_rows = [r for _, r in partial.iterrows()]
+    # 정확 매칭 행을 앞에 두고, 그 뒤에 부분 매칭. 중복(같은 인덱스) 제거.
+    seen = set()
+    out: List[pd.Series] = []
+    for r in exact_rows + partial_rows:
+        idx = (str(r.get("account_nm", "")), str(r.get("sj_div", "")), str(r.get("thstrm_amount", "")))
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append(r)
+    return out
+
+
 def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optional[int]]:
     if df is None or df.empty:
         return {key: None for key in ACCOUNT_KEYWORDS.keys()}
@@ -664,12 +721,21 @@ def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optio
     matched_acc = {}  # key → matched account_nm (중복 감지용)
     for key, keywords in ACCOUNT_KEYWORDS.items():
         sj = SJ_DIV_MAP.get(key, ["IS", "BS", "CIS", "CF"])
-        row = find_in_xbrl(df, keywords, sj)
-        if row is not None:
-            result[key] = to_number(row.get(amount_col))
-            matched_acc[key] = str(row.get("account_nm", ""))
-        else:
-            result[key] = None
+        # v38: 첫 매칭 행이 해당 offset의 amount가 비어있을 수 있어 모든 매칭 행을 순회.
+        rows = _find_all_in_xbrl(df, keywords, sj)
+        chosen_val = None
+        chosen_acc = ""
+        for r in rows:
+            v = to_number(r.get(amount_col))
+            if v is not None:
+                chosen_val = v
+                chosen_acc = str(r.get("account_nm", ""))
+                break
+        if chosen_val is None and rows:
+            # 모든 매칭 행이 amount 비어있음 — 첫 행의 account_nm은 메타로 남김
+            chosen_acc = str(rows[0].get("account_nm", ""))
+        result[key] = chosen_val
+        matched_acc[key] = chosen_acc
 
     # v37: D&A 합산 행 중복 매칭 보정.
     # 산일전기처럼 XBRL CF에 "감가상각비및무형자산상각비" 단일 행만 있으면
@@ -827,6 +893,15 @@ KEYWORD_EXCLUDES = {
     "장기리스부채": [],
     "단기금융상품": ["단기금융상품(사용제한)"],  # 필요시
     "장기금융상품": ["장기금융상품(사용제한)"],
+    # 당기순이익이 "지배기업소유주귀속순이익" / "주당순이익" 등에 잘못 매칭되지 않도록
+    "당기순이익": [
+        "지배기업", "비지배지분", "지배지분", "소유주",
+        "주당", "기본주당", "희석주당", "주당순이익",
+    ],
+    "당기순손실": [
+        "지배기업", "비지배지분", "지배지분", "소유주",
+        "주당", "기본주당", "희석주당", "주당순손실",
+    ],
 }
 
 
@@ -874,6 +949,54 @@ def find_account_in_html(df: pd.DataFrame, keywords: list, year_offset: int = 0)
             break
     candidates.sort()
     for _, idx, _ in candidates:
+        v = extract_value_from_row(df, idx, target_cols)
+        if v is not None:
+            return v
+    return None
+
+
+_NET_INCOME_DENY = (
+    "영업", "매출", "포괄", "지배", "비지배", "소유주",
+    "주당", "희석", "기본",
+    "세전", "법인세비용차감전", "법인세차감전", "차감전",
+    "계속영업", "중단영업",
+    "원천", "이자수익", "이자비용", "금융수익", "금융비용",
+    "처분", "평가", "환산",
+)
+
+
+def _find_net_income_permissive(df: pd.DataFrame, year_offset: int = 0) -> Optional[int]:
+    """IS 표 마지막 부분에서 '~순이익/~순손실'로 끝나는 행 직접 검색.
+
+    풀무원다논 등 적자 외감 회사의 IS가 표준 키워드와 다른 라벨
+    (예: '법인세비용차감후 당기순손실', '당기의 순손실', '계속·중단영업합 순손실')을
+    쓰는 케이스 대응. 매칭 규칙:
+      - 정규화 라벨이 '순이익' 또는 '순손실'을 포함
+      - _NET_INCOME_DENY 토큰을 포함하지 않음 (영업/포괄/지배지분/주당/세전 등 배제)
+      - 후보 중 가장 아래쪽 행(IS 최하단 = 진짜 당기순이익) 선택
+    """
+    if df is None or df.empty:
+        return None
+    year_cols = extract_year_columns(df)
+    target_cols = year_cols.get(year_offset, [])
+    if not target_cols:
+        return None
+    first_col = df.columns[0]
+    matches = []
+    for idx in range(len(df)):
+        cell = df.iloc[idx][first_col]
+        if pd.isna(cell):
+            continue
+        norm = normalize_account_name(str(cell))
+        if not norm:
+            continue
+        if ("순이익" not in norm) and ("순손실" not in norm) and ("순손익" not in norm):
+            continue
+        if any(tok in norm for tok in _NET_INCOME_DENY):
+            continue
+        matches.append(idx)
+    # 가장 아래쪽 행부터 시도 — 첫 유효 숫자 반환
+    for idx in reversed(matches):
         v = extract_value_from_row(df, idx, target_cols)
         if v is not None:
             return v
@@ -1810,6 +1933,26 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         stmt = STATEMENT_OF[key]
         df = dfs.get(stmt)
         val = find_account_in_html(df, keywords, year_offset=0)
+        # v38: 당기순이익 keyword 미스 시 (1) IS 표에서 '순이익/순손실' 행 permissive 검색,
+        # (2) 손익계산서 페이지에 당기순이익 행이 없으면 포괄손익계산서 페이지 추가 시도.
+        # 풀무원다논 등 적자 외감 회사 라벨/페이지 변형 대응.
+        if val is None and key == "당기순이익":
+            if df is not None:
+                val = _find_net_income_permissive(df, year_offset=0)
+            if val is None:
+                cis_url = find_statement_url(sub_docs, "포괄손익계산서")
+                if cis_url and cis_url != urls.get("IS"):
+                    cis_df = parse_html_statement(cis_url)
+                    if cis_df is not None:
+                        raw = find_account_in_html(cis_df, keywords, year_offset=0)
+                        if raw is None:
+                            raw = _find_net_income_permissive(cis_df, year_offset=0)
+                        if raw is not None:
+                            # 후속 stmt="IS" 단위 보정과 충돌 방지: CIS 단위 → IS 단위 환산해
+                            # raw를 IS 표 기준 값처럼 저장. 외부 if 분기가 IS→대표 단위로 마저 환산.
+                            cis_unit = detect_unit_from_header(cis_url) or 1
+                            is_unit = unit_scales.get("IS") or 1
+                            val = int(raw * cis_unit / is_unit) if is_unit else raw
         # v16 fix: 단위 불일치 보정 — 각 재무제표의 고유 단위로 원 환산 후
         # 대표 단위(unit_scale)로 다시 나눠 저장 → ev() 계산 일관성 확보
         if val is not None and stmt in unit_scales:
@@ -1835,7 +1978,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
     # 주의: 주석 표의 값은 통상 천원 단위 → unit_scale 별도 적용.
     # ============================================================
     da_keys = ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"]
-    da_missing = [k for k in da_keys if result_data.get(k) is None]
+    # v38: 값이 0인 경우도 누락으로 간주 — HTML CF 0값 행 매칭 케이스 (EBITDA=op_income 방지)
+    da_missing = [k for k in da_keys if not result_data.get(k)]
     da_fallback_used = False
     da_fallback_info = {}
     if da_missing:
@@ -1859,7 +2003,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
                 "_사용권자산상각비": "사용권자산상각비",
             }
             for r_key, n_key in mapping.items():
-                if result_data.get(r_key) is None:
+                # v38: 0 값도 누락 취급 (HTML CF 0값 잘못 매칭 보정)
+                if not result_data.get(r_key):
                     info = notes_da.get(n_key)
                     if info is not None:
                         # 주석에서 가져온 값은 원 단위(value_in_won).
@@ -1885,7 +2030,8 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
                                 d["발견여부"] = "✓ (주석 fallback)"
                                 break
             # 만약 개별 항목이 다 누락이고 '감가상각비_합산'만 있으면
-            if all(result_data.get(k) is None for k in ["_유형자산감가상각비", "_무형자산상각비"]):
+            # v38: 0 값도 누락 취급
+            if all(not result_data.get(k) for k in ["_유형자산감가상각비", "_무형자산상각비"]):
                 combined = notes_da.get("감가상각비_합산")
                 if combined is not None:
                     won_value = combined["value_in_won"]
@@ -1990,10 +2136,14 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
         for y in years:
             d = yearly_data.get(y) or {}
             # v37: _감가상각비_합산(XBRL 합산 행)이 있으면 EBITDA 계산 가능 → 보강 불필요
-            if all(d.get(k) is None for k in (
-                "_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비",
-                "_감가상각비_합산",
-            )):
+            # v38: D&A 값이 있더라도 합이 0이면 (XBRL '감가상각' 약한 키워드가 0값 행에
+            # 매칭된 케이스 등) 의미 있는 D&A가 아니므로 주석 보강을 다시 시도.
+            da_keys_listed = (
+                "_유형자산감가상각비", "_무형자산상각비",
+                "_사용권자산상각비", "_감가상각비_합산",
+            )
+            da_vals = [d.get(k) for k in da_keys_listed if d.get(k) is not None]
+            if (not da_vals) or sum(da_vals) == 0:
                 # 최소 한개 매출 또는 영업이익이 있어야 보강 의미 있음 (완전 실패 제외)
                 if d.get("매출액") is not None or d.get("영업이익") is not None:
                     da_missing_years.append(y)
@@ -2014,8 +2164,9 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                 updated = True
             # v37: 개별 감가/무형이 모두 누락이면 '감가상각비_합산' (감가+무형 합산 행) 폴백.
             # 산일전기 등 주석에 합산 행만 있는 케이스 → EBITDA 계산 실패 방지.
-            if (yearly_data[y].get("_유형자산감가상각비") is None
-                and yearly_data[y].get("_무형자산상각비") is None):
+            # v38: 0 값도 누락으로 간주 (XBRL 0값 행 잘못 매칭 케이스 보정).
+            if (not yearly_data[y].get("_유형자산감가상각비")
+                and not yearly_data[y].get("_무형자산상각비")):
                 combined = da.get("감가상각비_합산")
                 if combined and combined.get("value_in_won") is not None:
                     yearly_data[y]["_유형자산감가상각비"] = combined["value_in_won"]
@@ -2074,6 +2225,87 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                 }
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
+
+    # ============================================================
+    # v38: 당기순이익 누락 (None 또는 0) — HTML 다중 폴백.
+    # 상장사/외감 공통. 매출·영업이익은 잡혔는데 NI만 None인 케이스:
+    #  - XBRL이 net income을 못 잡았거나 prior-year amount가 비어있음
+    #  - 적자 표기 라벨(당기순손실 단독) keyword 미스
+    # 전략:
+    #  ① 해당 연도 자체 보고서 (extract_external_audit_data)
+    #  ② 그래도 누락이면 최신 보고서의 prior/prior-prior 컬럼
+    # ============================================================
+    ni_missing = [
+        y for y in years
+        if yearly_data.get(y)
+        and not yearly_data[y].get("당기순이익")  # None 또는 0
+        and (yearly_data[y].get("매출액") is not None
+             or yearly_data[y].get("영업이익") is not None)
+    ]
+    for y in ni_missing:
+        if progress_callback:
+            progress_callback(0, 1, f"당기순이익 HTML 보강 {y}년")
+        try:
+            ni_result = extract_external_audit_data(_dart, corp_code, y, prefer_consolidated)
+        except Exception:
+            ni_result = {}
+        ni_val = (ni_result.get("data") or {}).get("당기순이익")
+        if ni_val is not None and ni_val != 0:
+            html_us = ni_result.get("unit_scale", 1) or 1
+            # 이미 저장된 unit_scale 기준에 맞춰 환산 (저장 단위는 corp_type별로 다름)
+            existing_us = (yearly_meta.get(y, {}) or {}).get("unit_scale", 1) or 1
+            yearly_data[y]["당기순이익"] = int(ni_val * html_us / existing_us)
+            meta = yearly_meta.get(y, {}) or {}
+            meta["ni_html_fallback"] = True
+            yearly_meta[y] = meta
+
+    # ② 여전히 누락된 연도 — 최신 보고서의 multi-year IS 컬럼에서 추출.
+    still_missing = [
+        y for y in years
+        if yearly_data.get(y) and not yearly_data[y].get("당기순이익")
+        and (yearly_data[y].get("매출액") is not None
+             or yearly_data[y].get("영업이익") is not None)
+    ]
+    if still_missing:
+        latest_year = max(years)
+        try:
+            reports = find_external_audit_reports(_dart, corp_code, latest_year)
+        except Exception:
+            reports = []
+        if reports:
+            chosen = next((r for r in reports if r["is_consolidated"]), reports[0]) \
+                if prefer_consolidated else \
+                next((r for r in reports if not r["is_consolidated"]), reports[0])
+            try:
+                sub_docs = get_sub_docs(_dart, chosen["rcept_no"])
+            except Exception:
+                sub_docs = None
+            if sub_docs is not None:
+                is_url = find_statement_url(sub_docs, "손익계산서") \
+                    or find_statement_url(sub_docs, "포괄손익계산서")
+                is_df = parse_html_statement(is_url) if is_url else None
+                if is_df is None:
+                    combined_url = find_statement_url(sub_docs, "재무제표")
+                    if combined_url:
+                        classified = parse_combined_statements(combined_url)
+                        is_df = classified.get("IS")
+                        if is_url is None:
+                            is_url = combined_url
+                if is_df is not None and is_url is not None:
+                    unit_scale_html = detect_unit_from_header(is_url) or 1
+                    for y in still_missing:
+                        offset = latest_year - y
+                        if offset < 0 or offset > 2:
+                            continue
+                        v = find_account_in_html(is_df, ACCOUNT_KEYWORDS["당기순이익"], year_offset=offset)
+                        if v is None:
+                            v = _find_net_income_permissive(is_df, year_offset=offset)
+                        if v is not None and v != 0:
+                            existing_us = (yearly_meta.get(y, {}) or {}).get("unit_scale", 1) or 1
+                            yearly_data[y]["당기순이익"] = int(v * unit_scale_html / existing_us)
+                            meta = yearly_meta.get(y, {}) or {}
+                            meta["ni_html_fallback"] = f"latest-report-offset-{offset}"
+                            yearly_meta[y] = meta
 
     # ============================================================
     # 첫 연도 매출 성장률 계산용 직전년 매출 추출
@@ -2244,9 +2476,10 @@ def compute_yearly_metrics(yearly_data: Dict, yearly_meta: Dict, years: List[int
                       ["_유형자산감가상각비", "_무형자산상각비", "_사용권자산상각비"])
         # v37: XBRL/HTML CF에 합산 행("감가상각비및무형자산상각비")만 있고 개별 항목이
         # 없는 경우(산일전기 등 신규 상장사 패턴) 합산값으로 폴백.
+        # v38: combined == 0 (잘못 매칭된 0값 행)은 무시 → da를 None으로 유지
         if da is None:
             combined = _val_won(yearly_data, yearly_meta, y, "_감가상각비_합산")
-            if combined is not None:
+            if combined:
                 rou = _val_won(yearly_data, yearly_meta, y, "_사용권자산상각비")
                 da = combined + (rou or 0)
         cash_static = _sum_won(yearly_data, yearly_meta, y, _CASH_KEYS)
@@ -2909,6 +3142,30 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:la
 .info-pill.pill-accent .pill-key { color: #9a5a2b; }
 
 /* v27: 검색 결과 표 — st.dataframe(체크박스 선택) 기본 스타일 유지, 별도 CSS 없음 */
+
+/* v38: '데이터 추출' 버튼 — 선택 전(disabled)은 옅은 붉은색, 선택 후는 기본 primary.
+   1차: Streamlit 1.36+ 이 부착하는 .st-key-<key> 클래스 매칭.
+   2차 (fallback): marker div 인접 형제 셀렉터 — Streamlit 버전 무관 동작.
+        앱 측에서 disabled 버튼 직전에 <span class="extract-disabled-marker"/> 렌더. */
+div.st-key-extract_btn_disabled button,
+div[class*="st-key-extract_btn_disabled"] button,
+.stButton.st-key-extract_btn_disabled > button,
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button,
+[data-testid="stElementContainer"]:has(.extract-disabled-marker) + [data-testid="stElementContainer"] button {
+    background-color: #FEEFEF !important;
+    border-color: #F5C2C7 !important;
+    color: #842029 !important;
+    opacity: 1 !important;
+}
+div.st-key-extract_btn_disabled button:hover,
+div.st-key-extract_btn_disabled button:focus,
+div.st-key-extract_btn_disabled button:active,
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button:hover,
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button:focus {
+    background-color: #FEEFEF !important;
+    border-color: #F5C2C7 !important;
+    color: #842029 !important;
+}
 </style>
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
@@ -3176,7 +3433,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
     st.markdown(
         f"<div class='hpe-section'>검색 결과 ({len(companies)}건) "
-        f"<span style='font-size:0.85rem;font-weight:400;color:#6b7785;'>: 클릭/터치</span></div>",
+        f"<span style='font-size:0.85rem;font-weight:400;color:#6b7785;'>: 대상기업 클릭/터치</span></div>",
         unsafe_allow_html=True,
     )
 
@@ -3397,21 +3654,19 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             key=_aggrid_key,
         )
 
-        # 검색 결과 1건이면 자동 선택
-        if len(companies) == 1:
-            selected_idx = 0
-        else:
-            sel_rows = grid_response.get("selected_rows")
-            try:
-                if sel_rows is None:
-                    selected_idx = None
-                elif isinstance(sel_rows, pd.DataFrame):
-                    if not sel_rows.empty and "_row_idx" in sel_rows.columns:
-                        selected_idx = int(sel_rows.iloc[0]["_row_idx"])
-                elif isinstance(sel_rows, list) and len(sel_rows) > 0:
-                    selected_idx = int(sel_rows[0].get("_row_idx", 0))
-            except Exception:
+        # v38: 자동 선택 제거 — 단일 결과여도 사용자가 클릭해야 데이터 추출 버튼 활성화.
+        # (선택 전: 옅은 붉은색 disabled 버튼 / 선택 후: 기본 primary 버튼)
+        sel_rows = grid_response.get("selected_rows")
+        try:
+            if sel_rows is None:
                 selected_idx = None
+            elif isinstance(sel_rows, pd.DataFrame):
+                if not sel_rows.empty and "_row_idx" in sel_rows.columns:
+                    selected_idx = int(sel_rows.iloc[0]["_row_idx"])
+            elif isinstance(sel_rows, list) and len(sel_rows) > 0:
+                selected_idx = int(sel_rows[0].get("_row_idx", 0))
+        except Exception:
+            selected_idx = None
     else:
         # AgGrid 미설치 시 폴백 — 기존 st.dataframe 체크박스 방식
         event = st.dataframe(
@@ -3422,17 +3677,18 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             selection_mode="single-row",
             key="company_dataframe",
         )
-        if len(companies) == 1:
-            selected_idx = 0
-        else:
-            try:
-                sel_rows = event.selection.rows  # type: ignore[attr-defined]
-            except Exception:
-                sel_rows = []
-            selected_idx = sel_rows[0] if sel_rows else None
+        # v38: 자동 선택 제거 (위와 동일 — disabled→active 시각 전환)
+        try:
+            sel_rows = event.selection.rows  # type: ignore[attr-defined]
+        except Exception:
+            sel_rows = []
+        selected_idx = sel_rows[0] if sel_rows else None
 
     if selected_idx is None:
         st.caption("⬆️ 표에서 회사를 클릭해 선택하세요. (셀 또는 체크박스 클릭)")
+        # v38: marker — st-key-* 클래스 미부착인 구버전 Streamlit에서도
+        # 인접 형제 셀렉터로 다음 버튼을 옅은 붉은색으로 스타일링하기 위한 표식.
+        st.markdown('<span class="extract-disabled-marker"></span>', unsafe_allow_html=True)
         st.button("데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
         st.stop()
 
@@ -3448,8 +3704,23 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
     st.session_state.pop("auto_extract", None)
 
-    # v36 이슈2: 옵션 변경 자동 감지 — 동일 회사에서 fs/period 변경 시 자동 재추출
+    # v38: 이전 추출 결과에 당기순이익 누락 연도가 있으면 강제 재추출 (옛 캐시 무효화).
+    # 새 코드(v38+ NI 백필 로직)로 다시 채우기 위함.
     _ext = st.session_state.get("extracted")
+    force_refresh = False
+    if _ext and _ext.get("corp_code") == corp_code:
+        _yd = _ext.get("yearly_data") or {}
+        _years_cached = _ext.get("years") or []
+        if any(
+            _yd.get(y, {}).get("매출액") is not None
+            and not _yd.get(y, {}).get("당기순이익")
+            for y in _years_cached
+        ):
+            force_refresh = True
+            st.session_state.pop("extracted", None)
+            _ext = None
+
+    # v36 이슈2: 옵션 변경 자동 감지 — 동일 회사에서 fs/period 변경 시 자동 재추출
     auto_refresh_needed = False
     if (not extract_btn) and _ext and _ext.get("corp_code") == corp_code:
         _snap = _ext.get("snapshot", {}) or {}
@@ -3463,7 +3734,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         st.session_state.pop("extracted", None)
         _ext = None
 
-    if extract_btn or auto_refresh_needed:
+    if extract_btn or auto_refresh_needed or force_refresh:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
