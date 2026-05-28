@@ -3144,12 +3144,14 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:la
 /* v27: 검색 결과 표 — st.dataframe(체크박스 선택) 기본 스타일 유지, 별도 CSS 없음 */
 
 /* v38: '데이터 추출' 버튼 — 선택 전(disabled)은 옅은 붉은색, 선택 후는 기본 primary.
-   Streamlit 버전별 클래스 부착 방식이 달라 다중 셀렉터로 견고하게 매칭. */
+   1차: Streamlit 1.36+ 이 부착하는 .st-key-<key> 클래스 매칭.
+   2차 (fallback): marker div 인접 형제 셀렉터 — Streamlit 버전 무관 동작.
+        앱 측에서 disabled 버튼 직전에 <span class="extract-disabled-marker"/> 렌더. */
 div.st-key-extract_btn_disabled button,
 div[class*="st-key-extract_btn_disabled"] button,
-[data-testid="stButton"].st-key-extract_btn_disabled button,
-div.st-key-extract_btn_disabled [data-testid="stBaseButton-secondary"],
-.stButton.st-key-extract_btn_disabled > button {
+.stButton.st-key-extract_btn_disabled > button,
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button,
+[data-testid="stElementContainer"]:has(.extract-disabled-marker) + [data-testid="stElementContainer"] button {
     background-color: #FEEFEF !important;
     border-color: #F5C2C7 !important;
     color: #842029 !important;
@@ -3158,22 +3160,11 @@ div.st-key-extract_btn_disabled [data-testid="stBaseButton-secondary"],
 div.st-key-extract_btn_disabled button:hover,
 div.st-key-extract_btn_disabled button:focus,
 div.st-key-extract_btn_disabled button:active,
-div[class*="st-key-extract_btn_disabled"] button:hover,
-div[class*="st-key-extract_btn_disabled"] button:focus,
-div[class*="st-key-extract_btn_disabled"] button:active {
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button:hover,
+.element-container:has(.extract-disabled-marker) + .element-container .stButton button:focus {
     background-color: #FEEFEF !important;
     border-color: #F5C2C7 !important;
     color: #842029 !important;
-}
-/* 보강: 추가 marker div(.extract-disabled-tint)를 통한 인접 형제 + 자식 셀렉터 */
-.extract-disabled-tint + div .stButton button,
-.extract-disabled-tint + div button[kind="secondaryFormSubmit"],
-.extract-disabled-tint ~ div button:disabled,
-div.extract-disabled-tint-wrap button {
-    background-color: #FEEFEF !important;
-    border-color: #F5C2C7 !important;
-    color: #842029 !important;
-    opacity: 1 !important;
 }
 </style>
 """
@@ -3695,6 +3686,9 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     if selected_idx is None:
         st.caption("⬆️ 표에서 회사를 클릭해 선택하세요. (셀 또는 체크박스 클릭)")
+        # v38: marker — st-key-* 클래스 미부착인 구버전 Streamlit에서도
+        # 인접 형제 셀렉터로 다음 버튼을 옅은 붉은색으로 스타일링하기 위한 표식.
+        st.markdown('<span class="extract-disabled-marker"></span>', unsafe_allow_html=True)
         st.button("데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
         st.stop()
 
