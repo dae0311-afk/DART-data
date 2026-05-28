@@ -144,7 +144,7 @@ def _df_style_finance(df, *, zero_to_dash=False, highlight_total_row=False, tota
 # text-align이 적용되지 않는 문제를 우회. 직접 HTML을 만들어 st.markdown으로 렌더하면
 # CSS 제어가 완전한다. 정렬/0→dash/합계행 하이라이트를 모두 여기서 처리.
 def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
-                         total_keywords=("합계",), table_id=None):
+                         total_keywords=("합계",), table_id=None, subheader_row=None):
     """재무 표를 HTML로 렌더.
 
     정렬:
@@ -155,6 +155,9 @@ def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
     올션:
       - zero_to_dash: 0/N/A/⓮ → '-'
       - highlight_total_row: 첫 컬럼에 total_keywords 포함된 행은 회색 배경 + bold
+      - subheader_row: 메인 헤더 아래에 추가할 서브헤더 셀 텍스트 리스트.
+        길이는 (전체 컬럼 수 - 1) 이거나 전체 컬럼 수. 짧으면 첫 셀은 빈칸으로 채움.
+        v39: 연도별 연결/별도 표시용.
     """
     if df is None or df.empty:
         return
@@ -228,6 +231,19 @@ def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
     .{tid} th.num-col   {{ text-align: center; }}
     .{tid} td.num-col   {{ text-align: right; font-variant-numeric: tabular-nums; }}
     .{tid} tbody tr:last-child td {{ border-bottom: none; }}
+    .{tid} thead tr.subhead th {{
+        font-size: 11px;
+        font-weight: 500;
+        color: #5b6573;
+        padding: 2px 12px 6px;
+        border-bottom: 1px solid #d6dbe2;
+        top: 32px;
+    }}
+    .{tid} thead tr.subhead th.first-col {{
+        background: #fafbfc;
+    }}
+    .{tid} .sub-cfs {{ color: #1E3D6B; }}
+    .{tid} .sub-ofs {{ color: #8a5a00; }}
     </style>
     """
 
@@ -235,7 +251,30 @@ def render_finance_html(df, *, zero_to_dash=True, highlight_total_row=False,
     head_cells = [f"<th class='first-col'>{_html.escape(str(first_col))}</th>"]
     for c in other_cols:
         head_cells.append(f"<th class='num-col'>{_html.escape(str(c))}</th>")
-    thead = "<thead><tr>" + "".join(head_cells) + "</tr></thead>"
+    thead_rows = ["<tr>" + "".join(head_cells) + "</tr>"]
+
+    # v39: 서브헤더 행 (연도별 연결/별도 표시 등)
+    if subheader_row:
+        sub = list(subheader_row)
+        if len(sub) == len(other_cols):
+            sub_first, sub_others = "", sub
+        elif len(sub) == len(cols):
+            sub_first, sub_others = sub[0], sub[1:]
+        else:
+            sub_others = (sub + [""] * len(other_cols))[:len(other_cols)]
+            sub_first = ""
+        sub_cells = [f"<th class='first-col'>{_html.escape(str(sub_first))}</th>"]
+        for sv in sub_others:
+            sv_s = str(sv) if sv is not None else ""
+            cls = "num-col"
+            if sv_s == "연결":
+                cls += " sub-cfs"
+            elif sv_s == "별도":
+                cls += " sub-ofs"
+            sub_cells.append(f"<th class='{cls}'>{_html.escape(sv_s)}</th>")
+        thead_rows.append("<tr class='subhead'>" + "".join(sub_cells) + "</tr>")
+
+    thead = "<thead>" + "".join(thead_rows) + "</thead>"
 
     # <tbody>
     body_rows = []
@@ -350,7 +389,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v38</span></h2>
+        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v39</span></h2>
         <div class="hpe-sub">
             Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
         </div>
@@ -3864,8 +3903,13 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # v32: 수직 스크롤 없이 전체 표시 + 숫자 우측 정렬
         st.markdown("<div class='hpe-section'>요약 재무제표</div>", unsafe_allow_html=True)
         template_df = build_template_table(yearly_data, yearly_meta, years, unit_label=unit_label)
+        # v39: 연도별 연결/별도 서브헤더 — 혼합 시 컬럼별로 명확히 표시.
+        _sorted_years = sorted(years)
+        _fs_label_map = {"CFS": "연결", "OFS": "별도"}
+        fs_subheader = [_fs_label_map.get(per_year_fs.get(y, "-"), "-") for y in _sorted_years]
         # v36: HTML 테이블 렌더 — st.dataframe은 Styler text-align이 무시됨
-        render_finance_html(template_df, zero_to_dash=True, table_id="finance_summary")
+        render_finance_html(template_df, zero_to_dash=True, table_id="finance_summary",
+                            subheader_row=fs_subheader)
         st.caption(
             f"· 표시 단위: {unit_label} · 증감률은 퍼센트.\n"
             "· 현금성자산·총차입금은 하단 구성표 합계와 동일 (valuation 정의).\n"
