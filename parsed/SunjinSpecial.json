@@ -1,0 +1,17 @@
+{
+  "project": "SunjinSpecial",
+  "target": "선진특장 주식회사",
+  "sector": "제조/특장차",
+  "file_id": "10LhwYaPt4QU-IANu76sHYjwsKbMpRszU",
+  "accounting_firm": "회계법인 리안",
+  "report_date": "2021-09",
+  "sections": [
+    {"level": 1, "title": "I. 용역의 개요", "page": 4},
+    {"level": 1, "title": "II. 회사에 대한 이해", "page": 6},
+    {"level": 1, "title": "III. 손익계산서 분석", "page": 10},
+    {"level": 1, "title": "IV. 세무실사", "page": 33},
+    {"level": 1, "title": "V. 자산부채 실사결과 요약", "page": 49},
+    {"level": 1, "title": "VI. 자산부채 실사 세부 평가내역", "page": 55}
+  ],
+  "raw_toc": "목 차\n\nI. 용역의 개요 4\nII. 회사에 대한 이해 6\nIII. 손익계산서 분석 10\nIV. 세무실사 33\nV. 자산부채 실사결과 요약 49\nVI. 자산부채 실사 세부 평가내역 55"
+}

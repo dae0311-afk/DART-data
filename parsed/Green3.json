@@ -1,0 +1,19 @@
+{
+  "project": "Green3",
+  "target": "주식회사 아사히코",
+  "sector": "식품",
+  "file_id": "1hzGr9coIszk62hj0Nh_mF3slrM92HYvA",
+  "accounting_firm": "KPMG 삼정회계법인",
+  "report_date": "2024-07-25",
+  "sections": [
+    {"level": 1, "title": "I. Company overview", "page": 3},
+    {"level": 2, "title": "1. Target overview", "page": 4},
+    {"level": 2, "title": "2. Business overview", "page": 5},
+    {"level": 2, "title": "3. Organization chart", "page": 7},
+    {"level": 1, "title": "II. Executive summary", "page": 8},
+    {"level": 1, "title": "III. Financial performance", "page": 34},
+    {"level": 1, "title": "IV. Financial position", "page": 52},
+    {"level": 1, "title": "V. Appendices", "page": 66}
+  ],
+  "raw_toc": "Contents\n\nI. Company overview 3\n1. Target overview 4\n2. Business overview 5\n3. Organization chart 7\nII. Executive summary 8\nIII. Financial performance 34\nIV. Financial position 52\nV. Appendices 66"
+}

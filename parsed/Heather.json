@@ -1,0 +1,32 @@
+{
+  "project": "Heather",
+  "target": "주식회사 해농",
+  "sector": "식품/농식품",
+  "file_id": "1w6xf1v4jwEzAZYO7YPgSgXKh_FEDr8X0",
+  "accounting_firm": "KPMG 삼정회계법인",
+  "report_date": "2025-10-01",
+  "sections": [
+    {"level": 1, "title": "Company overview", "page": 3},
+    {"level": 2, "title": "Target overview", "page": 3},
+    {"level": 2, "title": "Shareholder structure", "page": 4},
+    {"level": 2, "title": "Product overview", "page": 5},
+    {"level": 1, "title": "Executive summary", "page": 8},
+    {"level": 2, "title": "Profit & loss overview", "page": 8},
+    {"level": 2, "title": "Quality of earnings (QoE)", "page": 10},
+    {"level": 2, "title": "Balance sheet overview", "page": 11},
+    {"level": 2, "title": "Quality of net assets (QoA)", "page": 12},
+    {"level": 2, "title": "Key findings (1/16–16/16)", "page": 14},
+    {"level": 1, "title": "Financial performance", "page": 32},
+    {"level": 2, "title": "Revenue", "page": 32},
+    {"level": 2, "title": "COGS", "page": 34},
+    {"level": 2, "title": "SG&A", "page": 35},
+    {"level": 2, "title": "Non-operating profit and loss", "page": 37},
+    {"level": 1, "title": "Financial position", "page": 38},
+    {"level": 2, "title": "Accounts receivable", "page": 40},
+    {"level": 2, "title": "Other non-current assets", "page": 45},
+    {"level": 2, "title": "Borrowings", "page": 47},
+    {"level": 1, "title": "Appendices", "page": 52},
+    {"level": 2, "title": "Scope of work", "page": 52}
+  ],
+  "raw_toc": "Company overview | Executive summary | Financial performance | Financial position | Appendices\n\nCompany overview p.3\n  Target overview p.3\n  Shareholder structure p.4\n  Product overview p.5\nExecutive summary p.8\n  Profit & loss overview p.8\n  Quality of earnings (QoE) p.10\n  Balance sheet overview p.11\n  Quality of net assets (QoA) p.12\n  Key findings (1/16–16/16) p.14\nFinancial performance p.32\n  Revenue p.32\n  COGS p.34\n  SG&A p.35\n  Non-operating profit and loss p.37\nFinancial position p.38\n  Accounts receivable p.40\n  Other non-current assets p.45\n  Borrowings p.47\nAppendices p.52\n  Scope of work p.52"
+}

@@ -1,0 +1,17 @@
+{
+  "project": "Bean",
+  "target": "주식회사 비앤비코리아",
+  "sector": "식품",
+  "file_id": "1SgaOhy19cu42FB-MWTzj1VM0048t4GFK",
+  "accounting_firm": "한울회계법인",
+  "report_date": "2022-05",
+  "sections": [
+    {"level": 1, "title": "I. Introduction", "page": 4},
+    {"level": 1, "title": "II. Executive Summary", "page": 10},
+    {"level": 1, "title": "III. Quality of Earning", "page": 16},
+    {"level": 1, "title": "IV. Quality of Assets & Liabilities", "page": 26},
+    {"level": 1, "title": "V. Other Consideration", "page": 37},
+    {"level": 1, "title": "VI. Valuation", "page": 51}
+  ],
+  "raw_toc": "Table of Contents\nFinancial Due Diligence & Valuation Report\n\nI Introduction 4\nII Executive Summary 10\nIII Quality of Earning 16\nIV Quality of Assets & Liabilities 26\nV Other Consideration 37\nVI Valuation 51"
+}

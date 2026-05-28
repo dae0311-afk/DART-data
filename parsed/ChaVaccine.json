@@ -1,0 +1,16 @@
+{
+  "project": "ChaVaccine",
+  "target": "주식회사 차백신연구소",
+  "sector": "바이오/제약",
+  "file_id": "1pDkoU3BiZKKy8-WZ0DnOULm0U6RN65e2",
+  "accounting_firm": "신정회계법인",
+  "report_date": "2020-08-19",
+  "sections": [
+    {"level": 1, "title": "I. 용역의 개요", "page": 1},
+    {"level": 1, "title": "II. 회사개요", "page": 7},
+    {"level": 1, "title": "III. 자산/부채 실사결과 요약", "page": 11},
+    {"level": 1, "title": "IV. 계정과목별 자산/부채 실사 내용", "page": 18}
+  ],
+  "raw_toc": "목차\n\nI. 용역의 개요\nII. 회사개요\nIII. 자산/부채 실사결과 요약\nIV. 계정과목별 자산/부채 실사 내용",
+  "note": "자산부채 실사 전문 보고서 (P&L 분석 및 세무실사 미포함). 목차에 페이지 번호 미기재, 본문 내 페이지 마커로 추정. 실사기준일: 2020-06-30."
+}

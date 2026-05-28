@@ -1,0 +1,14 @@
+{
+  "project": "Hera",
+  "target": "주식회사 화미",
+  "sector": "식품/외식",
+  "file_id": "1FyMdNkI2e1ScYqAihgz94ZDn0j5Z7r0V",
+  "accounting_firm": "딜로이트 안진회계법인",
+  "report_date": "2023-12",
+  "sections": [
+    {"level": 1, "title": "I. Target Overview", "page": 6},
+    {"level": 1, "title": "II. Executive Summary", "page": 16},
+    {"level": 1, "title": "III. Support Analysis", "page": 29}
+  ],
+  "raw_toc": "Contents\n\nI. Target Overview    Page 6\nII. Executive Summary  Page 16\nIII. Support Analysis  Page 29"
+}
