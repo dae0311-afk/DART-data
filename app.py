@@ -2947,6 +2947,21 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:la
 .info-pill.pill-accent .pill-key { color: #9a5a2b; }
 
 /* v27: 검색 결과 표 — st.dataframe(체크박스 선택) 기본 스타일 유지, 별도 CSS 없음 */
+
+/* v38: '데이터 추출' 버튼 — 선택 전(disabled)은 옅은 붉은색, 선택 후는 기본 primary */
+div.st-key-extract_btn_disabled button {
+    background-color: #FEEFEF !important;
+    border-color: #F5C2C7 !important;
+    color: #842029 !important;
+    opacity: 1 !important;
+}
+div.st-key-extract_btn_disabled button:hover,
+div.st-key-extract_btn_disabled button:focus,
+div.st-key-extract_btn_disabled button:active {
+    background-color: #FEEFEF !important;
+    border-color: #F5C2C7 !important;
+    color: #842029 !important;
+}
 </style>
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
@@ -3214,7 +3229,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     companies = st.session_state["companies"]
     st.markdown(
         f"<div class='hpe-section'>검색 결과 ({len(companies)}건) "
-        f"<span style='font-size:0.85rem;font-weight:400;color:#6b7785;'>: 클릭/터치</span></div>",
+        f"<span style='font-size:0.85rem;font-weight:400;color:#6b7785;'>: 대상기업 클릭/터치</span></div>",
         unsafe_allow_html=True,
     )
 
