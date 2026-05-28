@@ -389,7 +389,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v39</span></h2>
+        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v40</span></h2>
         <div class="hpe-sub">
             Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
         </div>
@@ -2161,6 +2161,7 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                     "unit_scale": result.get("unit_scale", 1),
                     "rcept_no": result.get("rcept_no"),
                     "report_nm": result.get("report_nm"),
+                    "is_consolidated": result.get("is_consolidated", False),
                     "debug": result.get("debug"),
                     "statement_urls": result.get("statement_urls"),
                     "other_fa_breakdown": result.get("other_fa_breakdown", {}),
@@ -2258,6 +2259,7 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
                     "unit_scale": result.get("unit_scale", 1),
                     "rcept_no": result.get("rcept_no"),
                     "report_nm": result.get("report_nm"),
+                    "is_consolidated": result.get("is_consolidated", False),
                     "debug": result.get("debug"),
                     "statement_urls": result.get("statement_urls"),
                     "other_fa_breakdown": result.get("other_fa_breakdown", {}),
@@ -3825,22 +3827,39 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         selected_corp = _ext.get("selected_corp", selected_corp)
 
         # -------- 연결/별도 실제 사용 연도별 추적 --------
+        # v40: 견고한 감지 — 외감 별도 보고서 report_nm은 "감사보고서" (단어 '별도' 없음)
+        # 라서 substring 매칭이 실패했음. XBRL은 meta.fs_div, HTML은 meta.is_consolidated
+        # 플래그를 우선 사용. 둘 다 없을 때만 report_nm substring 폴백.
         per_year_fs = {}  # {year: "CFS"|"OFS"|"-"}
         fallback_years = []  # 연결 요청이었으나 별도를 쓴 연도
         for y in years:
             meta = yearly_meta.get(y, {}) or {}
-            rpt = (meta.get("report_nm") or "")
-            src = (meta.get("source") or "")
-            is_cfs = ("연결" in rpt) or ("CFS" in src.upper())
-            is_ofs = ("별도" in rpt) or ("OFS" in src.upper())
-            if is_cfs and not is_ofs:
-                per_year_fs[y] = "CFS"
-            elif is_ofs and not is_cfs:
-                per_year_fs[y] = "OFS"
-                if fs_div_target == "CFS":
-                    fallback_years.append(y)
+            src = (meta.get("source") or "").upper()
+            resolved = None
+
+            if "XBRL" in src:
+                fs_val = meta.get("fs_div")
+                if fs_val in ("CFS", "OFS"):
+                    resolved = fs_val
+            elif "HTML" in src:
+                is_cons = meta.get("is_consolidated")
+                if is_cons is True:
+                    resolved = "CFS"
+                elif is_cons is False:
+                    resolved = "OFS"
+                else:
+                    rpt = meta.get("report_nm") or ""
+                    if "연결" in rpt:
+                        resolved = "CFS"
+                    elif rpt:
+                        resolved = "OFS"
+
+            if resolved is None:
+                per_year_fs[y] = "-"
             else:
-                per_year_fs[y] = fs_div_target if (meta.get("source") and meta.get("source") != "NONE") else "-"
+                per_year_fs[y] = resolved
+                if resolved == "OFS" and fs_div_target == "CFS":
+                    fallback_years.append(y)
 
         valid_fs = [v for v in per_year_fs.values() if v in ("CFS", "OFS")]
         if valid_fs:
@@ -3877,11 +3896,19 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         st.markdown(pill_html, unsafe_allow_html=True)
 
         # 연결 fallback 안내
+        # v40: 모든 데이터 있는 연도가 OFS로 폴백된 경우 → 회사 자체가 연결을 작성하지 않음
         if fs_div_target == "CFS" and fallback_years:
-            st.warning(
-                f"⚠️ 연결재무제표를 요청했으나 다음 연도는 별도재무제표로 대체되었습니다: "
-                f"{', '.join(map(str, fallback_years))} · 해당 연도에는 연결보고서가 공시되지 않아 별도를 표시."
-            )
+            data_years = [y for y in years if per_year_fs.get(y) in ("CFS", "OFS")]
+            if data_years and set(fallback_years) >= set(data_years):
+                st.info(
+                    "ℹ️ 이 회사는 연결재무제표를 작성하지 않습니다 (종속회사 없음 등). "
+                    "전 연도 별도재무제표를 표시합니다."
+                )
+            else:
+                st.warning(
+                    f"⚠️ 연결재무제표를 요청했으나 다음 연도는 별도재무제표로 대체되었습니다: "
+                    f"{', '.join(map(str, fallback_years))} · 해당 연도에는 연결보고서가 공시되지 않아 별도를 표시."
+                )
 
         # -------- 데이터 소스 수집 --------
         source_info = []
