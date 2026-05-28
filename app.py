@@ -909,6 +909,54 @@ def find_account_in_html(df: pd.DataFrame, keywords: list, year_offset: int = 0)
     return None
 
 
+_NET_INCOME_DENY = (
+    "영업", "매출", "포괄", "지배", "비지배", "소유주",
+    "주당", "희석", "기본",
+    "세전", "법인세비용차감전", "법인세차감전", "차감전",
+    "계속영업", "중단영업",
+    "원천", "이자수익", "이자비용", "금융수익", "금융비용",
+    "처분", "평가", "환산",
+)
+
+
+def _find_net_income_permissive(df: pd.DataFrame, year_offset: int = 0) -> Optional[int]:
+    """IS 표 마지막 부분에서 '~순이익/~순손실'로 끝나는 행 직접 검색.
+
+    풀무원다논 등 적자 외감 회사의 IS가 표준 키워드와 다른 라벨
+    (예: '법인세비용차감후 당기순손실', '당기의 순손실', '계속·중단영업합 순손실')을
+    쓰는 케이스 대응. 매칭 규칙:
+      - 정규화 라벨이 '순이익' 또는 '순손실'을 포함
+      - _NET_INCOME_DENY 토큰을 포함하지 않음 (영업/포괄/지배지분/주당/세전 등 배제)
+      - 후보 중 가장 아래쪽 행(IS 최하단 = 진짜 당기순이익) 선택
+    """
+    if df is None or df.empty:
+        return None
+    year_cols = extract_year_columns(df)
+    target_cols = year_cols.get(year_offset, [])
+    if not target_cols:
+        return None
+    first_col = df.columns[0]
+    matches = []
+    for idx in range(len(df)):
+        cell = df.iloc[idx][first_col]
+        if pd.isna(cell):
+            continue
+        norm = normalize_account_name(str(cell))
+        if not norm:
+            continue
+        if ("순이익" not in norm) and ("순손실" not in norm) and ("순손익" not in norm):
+            continue
+        if any(tok in norm for tok in _NET_INCOME_DENY):
+            continue
+        matches.append(idx)
+    # 가장 아래쪽 행부터 시도 — 첫 유효 숫자 반환
+    for idx in reversed(matches):
+        v = extract_value_from_row(df, idx, target_cols)
+        if v is not None:
+            return v
+    return None
+
+
 def classify_statement_table(t):
     """표 내용 지문으로 BS/IS/CF/EQ 중 어떤 재무제표인지 판별."""
     if t is None or t.shape[0] < 3 or t.shape[1] < 3:
@@ -1839,6 +1887,26 @@ def extract_external_audit_data(_dart, corp_code: str, year: int,
         stmt = STATEMENT_OF[key]
         df = dfs.get(stmt)
         val = find_account_in_html(df, keywords, year_offset=0)
+        # v38: 당기순이익 keyword 미스 시 (1) IS 표에서 '순이익/순손실' 행 permissive 검색,
+        # (2) 손익계산서 페이지에 당기순이익 행이 없으면 포괄손익계산서 페이지 추가 시도.
+        # 풀무원다논 등 적자 외감 회사 라벨/페이지 변형 대응.
+        if val is None and key == "당기순이익":
+            if df is not None:
+                val = _find_net_income_permissive(df, year_offset=0)
+            if val is None:
+                cis_url = find_statement_url(sub_docs, "포괄손익계산서")
+                if cis_url and cis_url != urls.get("IS"):
+                    cis_df = parse_html_statement(cis_url)
+                    if cis_df is not None:
+                        raw = find_account_in_html(cis_df, keywords, year_offset=0)
+                        if raw is None:
+                            raw = _find_net_income_permissive(cis_df, year_offset=0)
+                        if raw is not None:
+                            # 후속 stmt="IS" 단위 보정과 충돌 방지: CIS 단위 → IS 단위 환산해
+                            # raw를 IS 표 기준 값처럼 저장. 외부 if 분기가 IS→대표 단위로 마저 환산.
+                            cis_unit = detect_unit_from_header(cis_url) or 1
+                            is_unit = unit_scales.get("IS") or 1
+                            val = int(raw * cis_unit / is_unit) if is_unit else raw
         # v16 fix: 단위 불일치 보정 — 각 재무제표의 고유 단위로 원 환산 후
         # 대표 단위(unit_scale)로 다시 나눠 저장 → ev() 계산 일관성 확보
         if val is not None and stmt in unit_scales:
