@@ -2180,6 +2180,25 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
 
+        # v38: XBRL이 부분 성공했으나 당기순이익만 None인 연도 — HTML로 net income만 보강.
+        # (적자 외감 회사: XBRL element 누락 / 라벨 변형 케이스 대응)
+        for y in years:
+            d = yearly_data.get(y) or {}
+            meta = yearly_meta.get(y, {}) or {}
+            if (meta.get("source") == "XBRL"
+                and d.get("당기순이익") is None
+                and (d.get("매출액") is not None or d.get("영업이익") is not None)):
+                if progress_callback:
+                    progress_callback(0, 1, f"당기순이익 HTML 보강 {y}년")
+                ni_result = extract_external_audit_data(_dart, corp_code, y, prefer_consolidated)
+                ni_val = (ni_result.get("data") or {}).get("당기순이익")
+                if ni_val is not None:
+                    # XBRL은 unit_scale=1 (원 단위). HTML 결과를 원 환산해서 저장.
+                    html_us = ni_result.get("unit_scale", 1) or 1
+                    yearly_data[y]["당기순이익"] = int(ni_val * html_us)
+                    meta["ni_html_fallback"] = True
+                    yearly_meta[y] = meta
+
     # ============================================================
     # 첫 연도 매출 성장률 계산용 직전년 매출 추출
     # 조회 범위 첫 연도(예: 2021)의 재무제표에 이미 전기(2020) 열이 존재하므로,
