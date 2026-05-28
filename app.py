@@ -350,7 +350,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴</h2>
+        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v38</span></h2>
         <div class="hpe-sub">
             Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
         </div>
@@ -3704,8 +3704,23 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     # v23: 자동 추출 로직 제거 — 항상 버튼 클릭으로만 실행 (사용자 요구)
     st.session_state.pop("auto_extract", None)
 
-    # v36 이슈2: 옵션 변경 자동 감지 — 동일 회사에서 fs/period 변경 시 자동 재추출
+    # v38: 이전 추출 결과에 당기순이익 누락 연도가 있으면 강제 재추출 (옛 캐시 무효화).
+    # 새 코드(v38+ NI 백필 로직)로 다시 채우기 위함.
     _ext = st.session_state.get("extracted")
+    force_refresh = False
+    if _ext and _ext.get("corp_code") == corp_code:
+        _yd = _ext.get("yearly_data") or {}
+        _years_cached = _ext.get("years") or []
+        if any(
+            _yd.get(y, {}).get("매출액") is not None
+            and not _yd.get(y, {}).get("당기순이익")
+            for y in _years_cached
+        ):
+            force_refresh = True
+            st.session_state.pop("extracted", None)
+            _ext = None
+
+    # v36 이슈2: 옵션 변경 자동 감지 — 동일 회사에서 fs/period 변경 시 자동 재추출
     auto_refresh_needed = False
     if (not extract_btn) and _ext and _ext.get("corp_code") == corp_code:
         _snap = _ext.get("snapshot", {}) or {}
@@ -3719,7 +3734,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         st.session_state.pop("extracted", None)
         _ext = None
 
-    if extract_btn or auto_refresh_needed:
+    if extract_btn or auto_refresh_needed or force_refresh:
         period_n = period_map[period_label]
         start_year = 2015 if period_n == 99 else max(2015, end_year - period_n + 1)
         years = list(range(start_year, end_year + 1))
