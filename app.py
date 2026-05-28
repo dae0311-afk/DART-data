@@ -389,7 +389,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v40</span></h2>
+        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v41</span></h2>
         <div class="hpe-sub">
             Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
         </div>
@@ -403,6 +403,11 @@ st.divider()
 # 1) 상수
 # ====================================================================
 REPRT_CODE_ANNUAL = "11011"  # 사업보고서
+
+# 추출 로직 버전 — 변경 시 session_state 캐시 강제 무효화 (옛 yearly_data 폐기).
+# v41: _find_xbrl_candidates 도입 + partial 키워드 len-filter 적용으로
+# 이전 캐시는 매출액 등이 오인식되었을 수 있으므로 재추출 강제.
+EXTRACTION_VERSION = "v41"
 
 # 손익/재무상태/CF 계정 키워드
 # 키는 `_` 접두사일 경우 내부 계산용 보조 항목 (구성표에는 노출 가능)
@@ -715,41 +720,55 @@ def fetch_xbrl_finstate(_dart, corp_code: str, year: int, fs_div: str) -> Option
         return None
 
 
-def _find_all_in_xbrl(df: pd.DataFrame, keywords: list, sj_filter: list) -> List[pd.Series]:
-    """find_in_xbrl 대신 매칭되는 모든 row 반환 (account_nm 길이 짧은 순).
+def _find_xbrl_candidates(df: pd.DataFrame, keywords: list,
+                          sj_filter: list) -> Tuple[List[pd.Series], List[pd.Series]]:
+    """(exact_rows, partial_rows) 분리 반환.
 
-    K-IFRS XBRL은 같은 계정이 IS/CIS 등 여러 sj_div에 중복 등재되는 경우가 있고,
-    그 중 일부 row는 frmtrm/bfefrmtrm_amount 가 비어있을 수 있다. 호출측이 행을
-    순회하며 원하는 amount 컬럼이 채워진 첫 행을 고를 수 있도록 함.
+    v41: 기존 _find_all_in_xbrl은 exact + partial을 한 리스트로 반환해서,
+    exact 매칭이 있어도 그 행의 amount가 null일 때 호출측이 partial 행으로
+    폴백 → "매출액" 자리에 "매출원가"·"이자수익" 같은 행이 잘못 선택되는
+    버그가 있었음 (이브릿지처럼 prior-year 컬럼이 비어있는 XBRL에서 특히 위험).
+
+    이 함수는 두 그룹을 분리해 호출측이 "exact 우선, exact 전부 null이면 None"
+    정책을 적용할 수 있게 한다. partial pattern은 길이 ≥ 3 또는 괄호 포함
+    키워드만 사용 — "매출"·"수익"·"사채" 같은 2글자 키워드의 substring 매칭
+    위험을 차단.
     """
     if df is None or df.empty:
-        return []
+        return [], []
     work = df.copy()
     if "sj_div" in work.columns:
         work = work[work["sj_div"].isin(sj_filter)]
     if work.empty:
-        return []
+        return [], []
+
     exact_rows: List[pd.Series] = []
+    exact_keys = set()
     for kw in keywords:
         m = work[work["account_nm"] == kw]
         for _, r in m.iterrows():
-            exact_rows.append(r)
-    pattern = "|".join([re.escape(k) for k in keywords])
-    partial = work[work["account_nm"].astype(str).str.contains(pattern, na=False, regex=True)]
-    partial = partial.copy()
-    partial["_len"] = partial["account_nm"].astype(str).str.len()
-    partial = partial.sort_values("_len")
-    partial_rows = [r for _, r in partial.iterrows()]
-    # 정확 매칭 행을 앞에 두고, 그 뒤에 부분 매칭. 중복(같은 인덱스) 제거.
-    seen = set()
-    out: List[pd.Series] = []
-    for r in exact_rows + partial_rows:
-        idx = (str(r.get("account_nm", "")), str(r.get("sj_div", "")), str(r.get("thstrm_amount", "")))
-        if idx in seen:
-            continue
-        seen.add(idx)
-        out.append(r)
-    return out
+            key = (str(r.get("account_nm", "")), str(r.get("sj_div", "")),
+                   str(r.get("thstrm_amount", "")))
+            if key not in exact_keys:
+                exact_keys.add(key)
+                exact_rows.append(r)
+
+    partial_rows: List[pd.Series] = []
+    partial_keywords = [k for k in keywords if len(k) >= 3 or "(" in k]
+    if partial_keywords:
+        pattern = "|".join([re.escape(k) for k in partial_keywords])
+        partial = work[work["account_nm"].astype(str).str.contains(
+            pattern, na=False, regex=True)]
+        partial = partial.copy()
+        partial["_len"] = partial["account_nm"].astype(str).str.len()
+        partial = partial.sort_values("_len")
+        for _, r in partial.iterrows():
+            key = (str(r.get("account_nm", "")), str(r.get("sj_div", "")),
+                   str(r.get("thstrm_amount", "")))
+            if key not in exact_keys:
+                partial_rows.append(r)
+
+    return exact_rows, partial_rows
 
 
 def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optional[int]]:
@@ -760,19 +779,31 @@ def extract_from_xbrl(df: pd.DataFrame, year_offset: int = 0) -> Dict[str, Optio
     matched_acc = {}  # key → matched account_nm (중복 감지용)
     for key, keywords in ACCOUNT_KEYWORDS.items():
         sj = SJ_DIV_MAP.get(key, ["IS", "BS", "CIS", "CF"])
-        # v38: 첫 매칭 행이 해당 offset의 amount가 비어있을 수 있어 모든 매칭 행을 순회.
-        rows = _find_all_in_xbrl(df, keywords, sj)
+        # v41: exact 매칭이 있으면 partial로 폴백하지 않음.
+        # exact가 여러 행이면 (예: IS/CIS 중복 등재) offset별로 amount 있는 첫 행 선택.
+        # exact가 모두 null이면 키 값을 None으로 둬서 잘못된 partial 매칭(매출원가, 이자수익 등)을 방지.
+        exact_rows, partial_rows = _find_xbrl_candidates(df, keywords, sj)
         chosen_val = None
         chosen_acc = ""
-        for r in rows:
+        for r in exact_rows:
             v = to_number(r.get(amount_col))
             if v is not None:
                 chosen_val = v
                 chosen_acc = str(r.get("account_nm", ""))
                 break
-        if chosen_val is None and rows:
-            # 모든 매칭 행이 amount 비어있음 — 첫 행의 account_nm은 메타로 남김
-            chosen_acc = str(rows[0].get("account_nm", ""))
+        # 정확 매칭이 아예 없을 때만 partial 폴백 (기존 v37 동작 유지)
+        if chosen_val is None and not exact_rows:
+            for r in partial_rows:
+                v = to_number(r.get(amount_col))
+                if v is not None:
+                    chosen_val = v
+                    chosen_acc = str(r.get("account_nm", ""))
+                    break
+        if chosen_val is None:
+            if exact_rows:
+                chosen_acc = str(exact_rows[0].get("account_nm", ""))
+            elif partial_rows:
+                chosen_acc = str(partial_rows[0].get("account_nm", ""))
         result[key] = chosen_val
         matched_acc[key] = chosen_acc
 
@@ -970,13 +1001,17 @@ def find_account_in_html(df: pd.DataFrame, keywords: list, year_offset: int = 0)
                     return v
 
     # 2차: 부분 매칭 (가장 짧은 계정명 우선) + 제외 규칙 적용
+    # v41: 짧은 키워드("매출"·"수익"·"사채" 등 2글자)는 partial에서 제외 —
+    # "매출원가"·"이자수익"·"전환사채" 같은 sub-item으로 오인식되는 것 차단.
+    # 단어 길이 ≥ 3 또는 괄호 포함 키워드만 partial 패턴에 사용.
+    partial_keywords = [k for k in keywords if len(k) >= 3 or "(" in k]
     candidates = []
     for idx in range(len(df)):
         cell = df.iloc[idx][first_col]
         if pd.isna(cell):
             continue
         norm = normalize_account_name(str(cell))
-        for kw in keywords:
+        for kw in partial_keywords:
             nkw = normalize_account_name(kw)
             if not nkw or nkw not in norm:
                 continue
@@ -3747,9 +3782,16 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
 
     # v38: 이전 추출 결과에 당기순이익 누락 연도가 있으면 강제 재추출 (옛 캐시 무효화).
     # 새 코드(v38+ NI 백필 로직)로 다시 채우기 위함.
+    # v41: 추출 로직 변경(_find_xbrl_candidates, partial 키워드 len-filter)으로
+    # extraction_version 미스매치 시 강제 재추출 (v40 이하 캐시 매출액 오인식 데이터 폐기).
     _ext = st.session_state.get("extracted")
     force_refresh = False
     if _ext and _ext.get("corp_code") == corp_code:
+        if _ext.get("extraction_version") != EXTRACTION_VERSION:
+            force_refresh = True
+            st.session_state.pop("extracted", None)
+            _ext = None
+    if (not force_refresh) and _ext and _ext.get("corp_code") == corp_code:
         _yd = _ext.get("yearly_data") or {}
         _years_cached = _ext.get("years") or []
         if any(
@@ -3808,6 +3850,7 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             "end_year": end_year,
             "yearly_data": yearly_data,
             "yearly_meta": yearly_meta,
+            "extraction_version": EXTRACTION_VERSION,
             "selected_corp": selected_corp.to_dict() if hasattr(selected_corp, "to_dict") else dict(selected_corp),
             "snapshot": {
                 "fs_div_target": fs_div_target,
