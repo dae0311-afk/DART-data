@@ -3143,8 +3143,13 @@ section[data-testid="stSidebar"] div[data-testid="stSegmentedControl"] button:la
 
 /* v27: 검색 결과 표 — st.dataframe(체크박스 선택) 기본 스타일 유지, 별도 CSS 없음 */
 
-/* v38: '데이터 추출' 버튼 — 선택 전(disabled)은 옅은 붉은색, 선택 후는 기본 primary */
-div.st-key-extract_btn_disabled button {
+/* v38: '데이터 추출' 버튼 — 선택 전(disabled)은 옅은 붉은색, 선택 후는 기본 primary.
+   Streamlit 버전별 클래스 부착 방식이 달라 다중 셀렉터로 견고하게 매칭. */
+div.st-key-extract_btn_disabled button,
+div[class*="st-key-extract_btn_disabled"] button,
+[data-testid="stButton"].st-key-extract_btn_disabled button,
+div.st-key-extract_btn_disabled [data-testid="stBaseButton-secondary"],
+.stButton.st-key-extract_btn_disabled > button {
     background-color: #FEEFEF !important;
     border-color: #F5C2C7 !important;
     color: #842029 !important;
@@ -3152,10 +3157,23 @@ div.st-key-extract_btn_disabled button {
 }
 div.st-key-extract_btn_disabled button:hover,
 div.st-key-extract_btn_disabled button:focus,
-div.st-key-extract_btn_disabled button:active {
+div.st-key-extract_btn_disabled button:active,
+div[class*="st-key-extract_btn_disabled"] button:hover,
+div[class*="st-key-extract_btn_disabled"] button:focus,
+div[class*="st-key-extract_btn_disabled"] button:active {
     background-color: #FEEFEF !important;
     border-color: #F5C2C7 !important;
     color: #842029 !important;
+}
+/* 보강: 추가 marker div(.extract-disabled-tint)를 통한 인접 형제 + 자식 셀렉터 */
+.extract-disabled-tint + div .stButton button,
+.extract-disabled-tint + div button[kind="secondaryFormSubmit"],
+.extract-disabled-tint ~ div button:disabled,
+div.extract-disabled-tint-wrap button {
+    background-color: #FEEFEF !important;
+    border-color: #F5C2C7 !important;
+    color: #842029 !important;
+    opacity: 1 !important;
 }
 </style>
 """
@@ -3645,21 +3663,19 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             key=_aggrid_key,
         )
 
-        # 검색 결과 1건이면 자동 선택
-        if len(companies) == 1:
-            selected_idx = 0
-        else:
-            sel_rows = grid_response.get("selected_rows")
-            try:
-                if sel_rows is None:
-                    selected_idx = None
-                elif isinstance(sel_rows, pd.DataFrame):
-                    if not sel_rows.empty and "_row_idx" in sel_rows.columns:
-                        selected_idx = int(sel_rows.iloc[0]["_row_idx"])
-                elif isinstance(sel_rows, list) and len(sel_rows) > 0:
-                    selected_idx = int(sel_rows[0].get("_row_idx", 0))
-            except Exception:
+        # v38: 자동 선택 제거 — 단일 결과여도 사용자가 클릭해야 데이터 추출 버튼 활성화.
+        # (선택 전: 옅은 붉은색 disabled 버튼 / 선택 후: 기본 primary 버튼)
+        sel_rows = grid_response.get("selected_rows")
+        try:
+            if sel_rows is None:
                 selected_idx = None
+            elif isinstance(sel_rows, pd.DataFrame):
+                if not sel_rows.empty and "_row_idx" in sel_rows.columns:
+                    selected_idx = int(sel_rows.iloc[0]["_row_idx"])
+            elif isinstance(sel_rows, list) and len(sel_rows) > 0:
+                selected_idx = int(sel_rows[0].get("_row_idx", 0))
+        except Exception:
+            selected_idx = None
     else:
         # AgGrid 미설치 시 폴백 — 기존 st.dataframe 체크박스 방식
         event = st.dataframe(
@@ -3670,14 +3686,12 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
             selection_mode="single-row",
             key="company_dataframe",
         )
-        if len(companies) == 1:
-            selected_idx = 0
-        else:
-            try:
-                sel_rows = event.selection.rows  # type: ignore[attr-defined]
-            except Exception:
-                sel_rows = []
-            selected_idx = sel_rows[0] if sel_rows else None
+        # v38: 자동 선택 제거 (위와 동일 — disabled→active 시각 전환)
+        try:
+            sel_rows = event.selection.rows  # type: ignore[attr-defined]
+        except Exception:
+            sel_rows = []
+        selected_idx = sel_rows[0] if sel_rows else None
 
     if selected_idx is None:
         st.caption("⬆️ 표에서 회사를 클릭해 선택하세요. (셀 또는 체크박스 클릭)")
