@@ -1,0 +1,17 @@
+{
+  "project": "Green2",
+  "target": "풀무원샘물 주식회사",
+  "sector": "식품",
+  "file_id": "1OHNA2lgH8CDD-VHftY8nz_z3TCFN1uc7",
+  "accounting_firm": "EY한영회계법인",
+  "report_date": "2023-12-04",
+  "sections": [
+    {"level": 1, "title": "Target overview", "page": 1},
+    {"level": 1, "title": "Executive Summary", "page": 2},
+    {"level": 1, "title": "PL analysis", "page": 3},
+    {"level": 1, "title": "BS analysis", "page": 4},
+    {"level": 1, "title": "Other considerations", "page": 5},
+    {"level": 1, "title": "Appendix", "page": 6}
+  ],
+  "raw_toc": "Table of contents\n\nTarget overview\nExecutive Summary\nPL analysis\nBS analysis\nOther considerations\nAppendix\n\n1\n2\n3\n4\n5\n6"
+}

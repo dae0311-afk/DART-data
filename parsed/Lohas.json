@@ -1,0 +1,25 @@
+{
+  "project": "Lohas",
+  "target": "주식회사 풀무원 (연결/그룹)",
+  "sector": "식품/유통",
+  "file_id": "1Pr_-C19XP6cN26KO9mQMakMkR3-c9xxn",
+  "accounting_firm": "EY한영회계법인",
+  "report_date": "2023-05-15",
+  "sections": [
+    {"level": 1, "title": "Target overview", "page": 4},
+    {"level": 1, "title": "Executive summary", "page": 16},
+    {"level": 1, "title": "풀무원 연결", "page": 41},
+    {"level": 2, "title": "P/L analysis", "page": null},
+    {"level": 2, "title": "BS analysis", "page": null},
+    {"level": 2, "title": "CF analysis", "page": null},
+    {"level": 1, "title": "풀무원", "page": 53},
+    {"level": 1, "title": "풀무원식품", "page": 106},
+    {"level": 1, "title": "푸드머스", "page": 127},
+    {"level": 1, "title": "풀무원푸드앤컬처", "page": 138},
+    {"level": 1, "title": "미국법인", "page": 149},
+    {"level": 1, "title": "일본법인", "page": 163},
+    {"level": 1, "title": "중국법인", "page": 174},
+    {"level": 1, "title": "Appendices", "page": 190}
+  ],
+  "raw_toc": "Table of contents\n\nTarget overview 4\nExecutive summary 16\n풀무원 연결 41\n풀무원 53\n풀무원식품 106\n푸드머스 127\n풀무원푸드앤컬처 138\n미국법인 149\n일본법인 163\n중국법인 174\nAppendices 190"
+}

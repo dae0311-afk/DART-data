@@ -1,0 +1,14 @@
+{
+  "project": "Hercules",
+  "target": "주식회사 현진그린밀",
+  "sector": "식품/제조",
+  "file_id": "1O12Uat6pnZHPqd_5msSeBy82E-MoMrLA",
+  "accounting_firm": "딜로이트 안진회계법인",
+  "report_date": "2024-04",
+  "sections": [
+    {"level": 1, "title": "I. Target Overview", "page": 6},
+    {"level": 1, "title": "II. Executive Summary", "page": 15},
+    {"level": 1, "title": "III. Support Analysis", "page": 26}
+  ],
+  "raw_toc": "Contents\n\nI. Target Overview    Page 6\nII. Executive Summary  Page 15\nIII. Support Analysis  Page 26"
+}

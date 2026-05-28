@@ -1,0 +1,17 @@
+{
+  "project": "ITC",
+  "target": "주식회사 아이티켐",
+  "sector": "화학",
+  "file_id": "1wHjPpDvw39IMun8etcKas6vO2T8O6ph5",
+  "accounting_firm": "이촌회계법인",
+  "report_date": "2024-08",
+  "sections": [
+    {"level": 1, "title": "01. Scope and Limitation", "page": 4},
+    {"level": 1, "title": "02. Executive summary", "page": 7},
+    {"level": 1, "title": "03. Company overview", "page": 30},
+    {"level": 1, "title": "04. PL analysis (아이티켐)", "page": 38},
+    {"level": 1, "title": "05. BS analysis (아이티켐)", "page": 61},
+    {"level": 1, "title": "06. Appendices (계열사)", "page": 80}
+  ],
+  "raw_toc": "Table of Contents\n\n01 Scope and Limitation 4p\n02 Executive summary 7p\n03 Company overview, etc. 30p\n04 PL analysis (아이티켐) 38p\n05 BS analysis (아이티켐) 61p\n06 Appendices (계열사) 80p"
+}

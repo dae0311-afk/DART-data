@@ -1,0 +1,17 @@
+{
+  "project": "SunjinJeonggong",
+  "target": "선진정공 주식회사",
+  "sector": "제조/자동차부품",
+  "file_id": "181ctH5IHXBvcsMGafe9lpGCO8ACkV1VI",
+  "accounting_firm": "회계법인 리안",
+  "report_date": "2021-09",
+  "sections": [
+    {"level": 1, "title": "I. 용역의 개요", "page": 4},
+    {"level": 1, "title": "II. 회사에 대한 이해", "page": 6},
+    {"level": 1, "title": "III. 손익계산서 분석", "page": 12},
+    {"level": 1, "title": "IV. 세무실사", "page": 32},
+    {"level": 1, "title": "V. 자산부채 실사결과 요약", "page": 51},
+    {"level": 1, "title": "VI. 자산부채 실사 세부 평가내역", "page": 58}
+  ],
+  "raw_toc": "목 차\n\nI. 용역의 개요 4\nII. 회사에 대한 이해 6\nIII. 손익계산서 분석 12\nIV. 세무실사 32\nV. 자산부채 실사결과 요약 51\nVI. 자산부채 실사 세부 평가내역 58"
+}

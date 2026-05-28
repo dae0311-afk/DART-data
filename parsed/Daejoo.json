@@ -1,0 +1,22 @@
+{
+  "project": "Daejoo",
+  "target": "대주코레스 주식회사",
+  "sector": "제조",
+  "file_id": "1VxtKfX6I02B710GbQdBdfZigJ_6NHi-P",
+  "accounting_firm": "신아회계법인",
+  "report_date": "2017-08",
+  "sections": [
+    {"level": 1, "title": "제 1 장 Executive Summary", "page": 1},
+    {"level": 2, "title": "1. 재무실사 결과요약", "page": 1},
+    {"level": 2, "title": "2. 주식가치평가 결과요약(DCF법)", "page": 8},
+    {"level": 1, "title": "제 2 장 용역의 범위 및 한계", "page": 13},
+    {"level": 1, "title": "제 3 장 회사에 관한 사항", "page": 16},
+    {"level": 1, "title": "제 4 장 재무실사 결과", "page": 28},
+    {"level": 2, "title": "1. Quality of Earnings", "page": 28},
+    {"level": 2, "title": "2. Quality of Assets", "page": 47},
+    {"level": 1, "title": "제 5 장 DCF 주식가치평가결과", "page": 75},
+    {"level": 1, "title": "APPENDIX. I 추정재무제표", "page": 102}
+  ],
+  "raw_toc": "Table of Contents\n\n제 1 장 Executive Summary 1\n  1. 재무실사 결과요약 1\n  2. 주식가치평가 결과요약(DCF법) 8\n제 2 장 용역의 범위 및 한계 13\n제 3 장 회사에 관한 사항 16\n제 4 장 재무실사 결과 28\n  1. Quality of Earnings 28\n  2. Quality of Assets 47\n제 5 장 DCF 주식가치평가결과 75\nAPPENDIX. I 추정재무제표 102",
+  "note": "FDD & DCF 주식가치평가 통합 보고서."
+}

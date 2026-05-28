@@ -1,0 +1,19 @@
+{
+  "project": "SALT",
+  "target": "주식회사 샐러디 및 종속회사",
+  "sector": "외식/F&B",
+  "file_id": "1mS7zdD35_iX7jM8yJqa6aKMLUPJTP2y1",
+  "accounting_firm": "회계법인 리안",
+  "report_date": "2023-01",
+  "sections": [
+    {"level": 1, "title": "I. 용역의 개요", "page": 4},
+    {"level": 1, "title": "II. 회사에 대한 이해", "page": 6},
+    {"level": 1, "title": "III. 손익계산서 분석", "page": 19},
+    {"level": 1, "title": "IV. 세무실사", "page": 51},
+    {"level": 1, "title": "V. 자산부채 실사결과 요약", "page": 79},
+    {"level": 1, "title": "VI. 자산부채 실사 세부 평가내역", "page": 89},
+    {"level": 1, "title": "VII. 종속회사 자산부채 검토 (주식회사 샐러디키친)", "page": 114},
+    {"level": 1, "title": "VIII. 종속회사 자산부채 검토 (주식회사 샐러디팜)", "page": 128}
+  ],
+  "raw_toc": "목 차\n\nI. 용역의 개요 4\nII. 회사에 대한 이해 6\nIII. 손익계산서 분석 19\nIV. 세무실사 51\nV. 자산부채 실사결과 요약 79\nVI. 자산부채 실사 세부 평가내역 89\nVII. 종속회사 자산부채 검토 (주식회사 샐러디키친) 114\nVIII. 종속회사 자산부채 검토 (주식회사 샐러디팜) 128"
+}

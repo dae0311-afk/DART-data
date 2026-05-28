@@ -1,0 +1,16 @@
+{
+  "project": "Bread",
+  "target": "Morato Pane S.p.A.",
+  "sector": "식음료/외식",
+  "file_id": "19ygR_S3tFyhdTwpfadSlWlDRf98Xw2Wi",
+  "accounting_firm": "Deloitte Advisory S.r.l.",
+  "report_date": "2026-03-25",
+  "sections": [
+    {"level": 1, "title": "Historical and current trading", "page": 4},
+    {"level": 1, "title": "Assets and liabilities", "page": 15},
+    {"level": 1, "title": "Cash flow", "page": 26},
+    {"level": 1, "title": "Appendices", "page": 29}
+  ],
+  "raw_toc": "Contents\n\nHistorical and current trading 4\nAssets and liabilities 15\nCash flow 26\nAppendices 29",
+  "note": "Addendum Report – FY25. 이전 FDD 보고서(2024-06-12)의 추록. 이탈리아 제빵회사."
+}

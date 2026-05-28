@@ -1,0 +1,31 @@
+{
+  "project": "Mix",
+  "target": "동아원 주식회사",
+  "sector": "식품/제분",
+  "file_id": "182Jni0am1vIStYA4Y6EbVuiOgKLK3JCF",
+  "accounting_firm": "삼일회계법인 (PwC)",
+  "report_date": "2016-02",
+  "sections": [
+    {"level": 1, "title": "Transmittal Letter", "page": 3},
+    {"level": 1, "title": "Our Scope and Process", "page": 6},
+    {"level": 1, "title": "Executive Report", "page": 7},
+    {"level": 2, "title": "1. Financial due diligence", "page": 8},
+    {"level": 2, "title": "2. Valuation", "page": 12},
+    {"level": 1, "title": "Financial Due Diligence", "page": 19},
+    {"level": 2, "title": "3. Financial statements overview", "page": 20},
+    {"level": 2, "title": "4. Detailed financial position", "page": 25},
+    {"level": 2, "title": "5. Detailed income statements", "page": 49},
+    {"level": 1, "title": "Valuation", "page": 67},
+    {"level": 2, "title": "6. Valuation Summary", "page": 68},
+    {"level": 2, "title": "7. Detailed Cash Flow", "page": 75},
+    {"level": 2, "title": "8. Market Multiple", "page": 83},
+    {"level": 2, "title": "9. 자금수지 분석", "page": 85},
+    {"level": 1, "title": "Appendices", "page": 88},
+    {"level": 2, "title": "1. 한국제분 현황 분석", "page": 89},
+    {"level": 2, "title": "2. 그룹 구조조정 현황", "page": 95},
+    {"level": 2, "title": "3. Forecasted Financial Statements", "page": 102},
+    {"level": 2, "title": "4. Glossary", "page": 106}
+  ],
+  "raw_toc": "Contents\n\nTransmittal Letter 3\nOur Scope and Process 6\nExecutive Report 7\n  1 Financial due diligence 8\n  2 Valuation 12\nFinancial Due Diligence 19\n  3 Financial statements overview 20\n  4 Detailed financial position 25\n  5 Detailed income statements 49\nValuation 67\n  6 Valuation Summary 68\n  7 Detailed Cash Flow 75\n  8 Market Multiple 83\n  9 자금수지 분석 85\nAppendices 88\n  1 한국제분 현황 분석 89\n  2 그룹 구조조정 현황 95\n  3 Forecasted Financial Statements 102\n  4 Glossary 106",
+  "note": "FDD & Valuation 통합 보고서. 의뢰인: 이음프라이빗에쿼티㈜. DRAFT."
+}

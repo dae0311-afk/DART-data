@@ -1,0 +1,20 @@
+{
+  "project": "Alpha",
+  "target": "주식회사 알룩스",
+  "sector": "제조",
+  "file_id": "1Es1E8TjI38jrX5H-HVqAIqtKVIduAqfw",
+  "accounting_firm": "안세회계법인",
+  "report_date": "2020-12",
+  "sections": [
+    {"level": 1, "title": "I. 용역의 개요", "page": 2},
+    {"level": 1, "title": "II. Company Overview", "page": 4},
+    {"level": 1, "title": "III. 사업 현황", "page": 8},
+    {"level": 1, "title": "IV. 재무현황", "page": 13},
+    {"level": 1, "title": "V. 실사가치 평가", "page": 15},
+    {"level": 1, "title": "IV. 세무실사", "page": 30},
+    {"level": 1, "title": "V. 가치평가", "page": 31},
+    {"level": 1, "title": "VI. Appendix", "page": 47}
+  ],
+  "raw_toc": "목차\n\nI. 용역의 개요 ........ 2\nII. Company Overview ... 4\nIII. 사업 현황 ......... 8\nIV. 재무현황 .......... 13\nV. 실사가치 평가 ...... 15\nIV. 세무실사 .......... 30\nV. 가치평가 ........... 31\nVI. Appendix .......... 47",
+  "note": "목차 원본에 IV, V 번호 중복 표기. 주력 사업: 자동차 알루미늄 휠 단조 제조."
+}

@@ -1,0 +1,18 @@
+{
+  "project": "Lixil",
+  "target": "릭실코리아 유한회사",
+  "sector": "제조",
+  "file_id": "1CMiWmya1gHJ-E96WqoXPHhWKoI5YIl29",
+  "accounting_firm": "태성회계법인",
+  "report_date": "2020-02",
+  "sections": [
+    {"level": 1, "title": "I. 용역 결과 요약", "page": 4},
+    {"level": 1, "title": "II. 용역의 개요", "page": 10},
+    {"level": 1, "title": "III. 회사 현황", "page": 13},
+    {"level": 1, "title": "IV. 재무실사", "page": 35},
+    {"level": 1, "title": "V. 세무실사", "page": 62},
+    {"level": 1, "title": "VI. Valuation", "page": 68}
+  ],
+  "raw_toc": "Table of contents\n\nI. 용역 결과 요약 4\nII. 용역의 개요 10\nIII. 회사 현황 13\nIV. 재무실사 35\nV. 세무실사 62\nVI. Valuation 68",
+  "note": "수신: 유안타증권㈜ 및 잠재 대주단. FDD & Valuation 통합 보고서."
+}

@@ -1,0 +1,29 @@
+{
+  "project": "Sunrise",
+  "target": "주식회사 에스아이플렉스",
+  "sector": "전자부품제조",
+  "file_id": "1pziSFqnBkVejqcW6l2RDEtSEFvSah-15",
+  "accounting_firm": "삼일회계법인 (PwC)",
+  "report_date": "2025-03-06",
+  "sections": [
+    {"level": 1, "title": "Transmittal Letter", "page": 5},
+    {"level": 1, "title": "Scope and Process", "page": 6},
+    {"level": 1, "title": "Executive Report – FDD", "page": 8},
+    {"level": 2, "title": "1. Target overview", "page": 10},
+    {"level": 2, "title": "2. Transaction overview", "page": 11},
+    {"level": 2, "title": "3. Business overview", "page": 12},
+    {"level": 2, "title": "4. (Proforma) Income statement overview", "page": 13},
+    {"level": 2, "title": "5. Constant currency analysis", "page": 16},
+    {"level": 2, "title": "6. Free cash flow analysis", "page": 18},
+    {"level": 2, "title": "7. Sales overview", "page": 19},
+    {"level": 2, "title": "8. Sales and CM overview by key product categories", "page": 28},
+    {"level": 2, "title": "9. Unit margin analysis – Key products", "page": 34},
+    {"level": 1, "title": "Executive Report – Valuation", "page": 81},
+    {"level": 1, "title": "Selected Information – FDD", "page": 95},
+    {"level": 1, "title": "Selected Information – Valuation", "page": 129},
+    {"level": 1, "title": "Appendix", "page": 164},
+    {"level": 1, "title": "Glossary", "page": 167}
+  ],
+  "raw_toc": "Contents\n\nTransmittal Letter 5\nScope and Process 6\nExecutive Report – FDD 8\nExecutive Report – Valuation 81\nSelected Information – FDD 95\nSelected Information – Valuation 129\nAppendix 164\nGlossary 167",
+  "note": "FDD & Valuation 통합 보고서. 의뢰인: 웰투시인베스트먼트. 베트남 현지법인 포함."
+}

@@ -1,0 +1,27 @@
+{
+  "project": "Dream",
+  "target": "주식회사 디앤티 (및 종속·관계회사)",
+  "sector": "유통/소비재",
+  "file_id": "105bXdoQdggTbR-1KA9IyrTcrW65fOQZC",
+  "accounting_firm": "삼일회계법인 (PwC)",
+  "report_date": "2024-03-08",
+  "sections": [
+    {"level": 1, "title": "Transmittal Letter", "page": 3},
+    {"level": 1, "title": "Scope and Process", "page": 6},
+    {"level": 1, "title": "Executive Report", "page": 9},
+    {"level": 2, "title": "1. Business overview", "page": 11},
+    {"level": 2, "title": "2. 디앤티 & 와이드", "page": 23},
+    {"level": 3, "title": "2.1 KPI summary", "page": 24},
+    {"level": 3, "title": "2.2 PL analysis", "page": 28},
+    {"level": 3, "title": "2.3 BS analysis", "page": 48},
+    {"level": 3, "title": "2.4 CF analysis", "page": 59},
+    {"level": 2, "title": "3. 관계회사", "page": 61},
+    {"level": 3, "title": "3.1 디앤티글로벌", "page": 62},
+    {"level": 3, "title": "3.2 보문테크닉스", "page": 64},
+    {"level": 2, "title": "4. Other matters", "page": 66},
+    {"level": 1, "title": "Selected Information", "page": 71},
+    {"level": 2, "title": "5. 디앤티 & 와이드", "page": 72},
+    {"level": 2, "title": "6. 관계회사", "page": 89}
+  ],
+  "raw_toc": "Contents\n\nTransmittal Letter 3\nScope and Process 6\nExecutive Report 9\n  1 Business overview 11\n  2 디앤티 & 와이드 23\n    2.1 KPI summary 24\n    2.2 PL analysis 28\n    2.3 BS analysis 48\n    2.4 CF analysis 59\n  3 관계회사 61\n    3.1 디앤티글로벌 62\n    3.2 보문테크닉스 64\n  4 Other matters 66\nSelected Information 71\n  5 디앤티 & 와이드 72\n  6 관계회사 89"
+}

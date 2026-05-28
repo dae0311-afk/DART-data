@@ -1,0 +1,17 @@
+{
+  "project": "EPlatform",
+  "target": "주식회사 이브릿지",
+  "sector": "IT/플랫폼",
+  "file_id": "1oJ9jIx5beEPKNagjP0OPsFlMfFwqYHUz",
+  "accounting_firm": "EY한영회계법인",
+  "report_date": "2016-12-21",
+  "sections": [
+    {"level": 1, "title": "I. 회사에 대한 이해", "page": 3},
+    {"level": 1, "title": "II. 재무실사 주요사항", "page": 12},
+    {"level": 1, "title": "III. 재무상태 분석", "page": 36},
+    {"level": 1, "title": "IV. 영업성과 분석", "page": 50},
+    {"level": 1, "title": "V. 세무실사 검토사항", "page": 91}
+  ],
+  "raw_toc": "Table of Contents\n\nI. 회사에 대한 이해 3\nII. 재무실사 주요사항 12\nIII. 재무상태 분석 36\nIV. 영업성과 분석 50\nV. 세무실사 검토사항 91",
+  "note": "공항 라운지·면세점 운영대행 및 마케팅 플랫폼 사업."
+}

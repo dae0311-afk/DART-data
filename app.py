@@ -1,18 +1,19 @@
 """
-DART 재무정보 추출 에이전트 v8
-- PE 5개년 재무요약 템플릿
-- 상장사: finstate_all (XBRL) 우선
-- 외감 비상장사: 감사보고서 sub_docs HTML viewer 직접 파싱
-- 회사 검색: corp_code.xml 직접 조회 fallback (사명 변경 대응)
-- v7: D&A 주석 fallback (CF 통합 표시 케이스 대응)
-- v8: 첫 연도 매출 성장률 계산용 직전년 매출 추출 + 총차입금 None/0 구분
+DART 재무분석 + FDD 통합 도구 (v42 — Unified)
+- 홈: 회사 검색 후 [요약재무제표] / [예비적 FDD] 박스로 진입
+- DART 추출: 상장사는 XBRL, 외감은 감사보고서 HTML viewer 직접 파싱
+- FDD: 27개 템플릿 라이브러리 + Claude API 본문 초안 생성
+- 사이드바: 홈 / DART 추출 / FDD 자유 이동
 """
 
 import io
+import json
+import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
 import pandas as pd
@@ -27,6 +28,20 @@ try:
 except Exception:
     _AGGRID_AVAILABLE = False
     JsCode = None  # type: ignore
+
+# FDD 초안 생성용 (선택적 — 미설치 시 FDD 페이지에서 안내)
+try:
+    from anthropic import Anthropic
+    _ANTHROPIC_AVAILABLE = True
+except Exception:
+    _ANTHROPIC_AVAILABLE = False
+    Anthropic = None  # type: ignore
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 
 # v33: 구성표/요약표의 "N/A", "0", "(0)", "" 등 빈값 → "-" 표기 통일
@@ -333,11 +348,15 @@ def _df_right_align_numbers(df):
 # 0) 페이지 설정
 # ====================================================================
 st.set_page_config(
-    page_title="DART 재무분석",
+    page_title="DART 재무분석 + FDD",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ----- 페이지 라우팅 상태 -----
+if "page" not in st.session_state:
+    st.session_state["page"] = "홈"
 
 # ----- 전역 스타일 -----
 st.markdown(
@@ -385,13 +404,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ----- 헤더 -----
+# ----- 헤더 (페이지별로 동적) -----
+_page_titles = {
+    "홈": ("🏠 홈", "회사명을 검색하고 분석 모드를 선택하세요"),
+    "DART 추출": ("📈 DART 재무분석", "사업·감사보고서 자동 추출 → 5개년 요약"),
+    "FDD": ("📝 예비적 FDD 생성", "27개 FDD 템플릿 + Claude 본문 초안"),
+}
+_h_title, _h_sub = _page_titles.get(st.session_state["page"], _page_titles["홈"])
 st.markdown(
-    """
+    f"""
     <div class="hpe-header">
-        <h2>📈 DART 재무분석 툴 <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v41</span></h2>
+        <h2>{_h_title} <span style='font-size:0.6em;color:#9aa3af;font-weight:400;'>v42</span></h2>
         <div class="hpe-sub">
-            Highland PE · 내부 전용 | 출처: DART(dart.fss.or.kr)
+            Highland PE · 내부 전용 | {_h_sub}
         </div>
     </div>
     """,
@@ -543,13 +568,15 @@ STATEMENT_OF = {
 }
 
 # ====================================================================
-# 2) API 키
+# 2) API 키 (Streamlit Cloud: st.secrets / Codespaces·local: .env)
 # ====================================================================
 api_key = ""
 try:
     api_key = st.secrets.get("DART_API_KEY", "")
 except Exception:
     api_key = ""
+if not api_key:
+    api_key = os.getenv("DART_API_KEY", "")
 
 if not api_key:
     api_key = st.sidebar.text_input("DART OpenAPI 인증키", type="password")
@@ -567,6 +594,243 @@ try:
 except Exception as e:
     st.error(f"API 키 초기화 실패: {e}")
     st.stop()
+
+# ====================================================================
+# 2.5) FDD 초안 생성 (Anthropic API + 27개 템플릿 라이브러리)
+# ====================================================================
+
+def _find_parsed_dir() -> Path:
+    """parsed/ 디렉토리 위치 자동 탐색 (DART-data: ./parsed, FDD: ../parsed)."""
+    here = Path(__file__).resolve().parent
+    for cand in [here / "parsed", here.parent / "parsed"]:
+        if cand.exists() and cand.is_dir() and any(cand.glob("*.json")):
+            return cand
+    return here / "parsed"
+
+
+PARSED_DIR = _find_parsed_dir()
+
+
+# KSIC(업종코드 첫 2자리) → FDD 섹터 매핑
+KSIC_TO_SECTORS: Dict[str, List[str]] = {
+    "10": ["식품", "식품/농식품", "식품/제조", "식품/유통", "식품/제분"],
+    "11": ["식품"],
+    "12": ["식품"],
+    "13": ["제조"], "14": ["제조"], "15": ["제조"],
+    "16": ["제조"], "17": ["제조"], "18": ["제조"],
+    "19": ["화학"], "20": ["화학"], "21": ["바이오/제약"],
+    "22": ["제조"], "23": ["제조"],
+    "24": ["제조"], "25": ["제조", "제조/자동차부품"],
+    "26": ["전자부품제조", "제조/기술"],
+    "27": ["전자부품제조", "제조/기술"],
+    "28": ["제조", "가전/렌탈"],
+    "29": ["제조", "제조/기술", "제조/특장차"],
+    "30": ["제조/자동차부품", "제조/특장차"],
+    "31": ["제조/자동차부품"],
+    "32": ["제조"], "33": ["제조"],
+    "45": ["유통/소비재"],
+    "46": ["유통/소비재", "식품/유통"],
+    "47": ["유통/소비재", "식품/유통", "가전/렌탈"],
+    "55": ["외식/F&B", "식음료/외식", "식품/외식"],
+    "56": ["외식/F&B", "식음료/외식", "식품/외식"],
+    "58": ["IT/플랫폼"], "59": ["IT/플랫폼"],
+    "61": ["IT/플랫폼"], "62": ["IT/플랫폼"], "63": ["IT/플랫폼"],
+}
+
+
+def map_ksic_to_sectors(induty_code: str) -> List[str]:
+    if not induty_code or len(induty_code) < 2:
+        return []
+    return KSIC_TO_SECTORS.get(induty_code[:2], [])
+
+
+@st.cache_data(show_spinner=False)
+def load_fdd_templates() -> List[dict]:
+    """parsed/*.json 27개 FDD 템플릿 로드 (캐시)."""
+    if not PARSED_DIR.exists():
+        return []
+    out = []
+    for p in sorted(PARSED_DIR.glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return out
+
+
+def fdd_sections_outline(fdd: dict) -> str:
+    lines = []
+    for s in fdd.get("sections", []):
+        indent = "  " * max(0, s.get("level", 1) - 1)
+        page = s.get("page")
+        page_str = f" (p.{page})" if page else ""
+        lines.append(f"{indent}- {s.get('title', '')}{page_str}")
+    return "\n".join(lines)
+
+
+def build_fdd_prompt(template: dict, company: dict) -> str:
+    return f"""당신은 PE 펌(하일랜드에쿼티파트너스)의 재무실사(FDD) 보고서 작성 어시스턴트입니다.
+참고 FDD 보고서의 구조를 그대로 따라 대상 회사의 FDD 초안을 작성하세요.
+
+## 참고 보고서 (템플릿)
+- 프로젝트명: {template.get('project', '')}
+- 대상회사: {template.get('target', '')}
+- 섹터: {template.get('sector', '')}
+- 회계법인: {template.get('accounting_firm', '')}
+- 보고일: {template.get('report_date', '')}
+
+### 참고 보고서 목차
+{fdd_sections_outline(template)}
+
+## 대상 회사 정보 (DART 공시)
+- 회사명: {company.get('corp_name', '')}
+- 영문명: {company.get('corp_name_eng', '')}
+- 대표이사: {company.get('ceo_nm', '')}
+- 업종코드(KSIC): {company.get('induty_code', '')}
+- 설립일: {company.get('est_dt', '')}
+- 결산월: {company.get('acc_mt', '')}
+- 사업자번호: {company.get('bizr_no', '')}
+- 본사주소: {company.get('adres', '')}
+- 홈페이지: {company.get('hm_url', '')}
+- 상장구분: {company.get('corp_cls', '')}
+
+## 작성 지침
+1. **참고 보고서의 목차 구조를 그대로 따라** 각 섹션 제목을 마크다운 `##`/`###` 헤딩으로 출력
+2. 각 섹션마다 **200~400자** 분량의 초안 본문을 작성 (실제 FDD 톤으로)
+3. 구체적 숫자는 알 수 없으므로 `[XX억원]`, `[YY%]` 같이 **플레이스홀더**로 표기
+4. 회사 특성/업종 특수성을 반영해 섹터별로 의미 있는 분석 포인트를 제안
+5. 마지막에 `## 추가 확인 필요사항` 섹션으로 실사 시 검토할 항목 5개 bullet 제시
+"""
+
+
+def generate_fdd_draft(api_key: str, template: dict, company: dict, model: str) -> str:
+    if not _ANTHROPIC_AVAILABLE:
+        raise RuntimeError("anthropic 패키지가 설치되지 않았습니다.")
+    client = Anthropic(api_key=api_key)
+    prompt = build_fdd_prompt(template, company)
+    msg = client.messages.create(
+        model=model,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_company_info(_dart, corp_code: str) -> Optional[dict]:
+    """corp_code → dart.company() 전체 개황 정보 (FDD 프롬프트용)."""
+    try:
+        info = _dart.company(corp_code)
+        if isinstance(info, dict):
+            return info
+        if isinstance(info, list) and info:
+            return info[0]
+    except Exception:
+        return None
+    return None
+
+
+def render_fdd_page(_dart, selected_corp, corp_code: str, corp_name: str):
+    """FDD 페이지 본문 — 회사 선택 후 호출."""
+    templates = load_fdd_templates()
+    if not templates:
+        st.error(
+            "❌ FDD 템플릿 라이브러리가 비어 있습니다.\n"
+            f"`{PARSED_DIR}` 디렉토리에 27개 JSON 파일이 있어야 합니다."
+        )
+        return
+
+    sectors_count = len(set(f.get("sector", "") for f in templates))
+    st.info(f"📚 {len(templates)}개 FDD 템플릿 로드됨 · 섹터 {sectors_count}종")
+
+    # ----- 회사 개황 보강 (corp_cls, induty_code 등) -----
+    with st.spinner("회사 개황 조회 중..."):
+        info = fetch_company_info(_dart, corp_code)
+    if not info:
+        st.error("회사 개황 조회 실패 — 잠시 후 다시 시도하세요.")
+        return
+
+    st.markdown("<div class='hpe-section'>1) 대상 회사 개황</div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("회사명", info.get("corp_name", corp_name) or corp_name)
+    c2.metric("KSIC 업종코드", info.get("induty_code", "-") or "-")
+    c3.metric("설립일", info.get("est_dt", "-") or "-")
+    with st.expander("전체 개황 정보"):
+        st.json(info)
+
+    suggested = map_ksic_to_sectors(info.get("induty_code", ""))
+    if suggested:
+        st.success(f"🎯 추정 섹터: {', '.join(suggested)}")
+    else:
+        st.warning("KSIC 매핑 미지원 업종 — 아래에서 직접 템플릿을 선택하세요.")
+
+    # ----- 템플릿 선택 -----
+    st.markdown("<div class='hpe-section'>2) 참고 FDD 템플릿 선택</div>", unsafe_allow_html=True)
+    auto_pool = [f for f in templates if f.get("sector") in suggested]
+    mode_opts = ["추정 섹터에서 선택", "전체 27개에서 직접 선택"] if auto_pool else ["전체 27개에서 직접 선택"]
+    mode = st.radio("템플릿 선택 방식", mode_opts, horizontal=True, key="fdd_mode")
+
+    pool = auto_pool if mode == "추정 섹터에서 선택" else templates
+    if not pool:
+        pool = templates
+    labels = [
+        f"{f.get('project', '?')} · {f.get('sector', '?')} · {f.get('target', '?')}"
+        for f in pool
+    ]
+    t_idx = st.selectbox(
+        "템플릿 FDD",
+        range(len(labels)),
+        format_func=lambda i: labels[i],
+        key="fdd_template_idx",
+    )
+    template = pool[t_idx]
+    with st.expander("선택한 템플릿 구조 미리보기"):
+        st.text(fdd_sections_outline(template))
+
+    # ----- 초안 생성 -----
+    st.markdown("<div class='hpe-section'>3) Claude API 초안 생성</div>", unsafe_allow_html=True)
+    api_key_local = st.session_state.get("anthropic_key_input", "")
+    model_local = st.session_state.get("fdd_model_select", "claude-sonnet-4-6")
+
+    if not _ANTHROPIC_AVAILABLE:
+        st.error("❌ anthropic 패키지가 설치되지 않았습니다. requirements.txt에 `anthropic>=0.40` 추가 필요.")
+        return
+
+    if not api_key_local:
+        st.warning("⬅️ 사이드바의 [Anthropic API Key]에 키를 입력하세요.")
+        return
+
+    gen_btn = st.button("🚀 초안 생성", type="primary", use_container_width=True, key="fdd_gen_btn")
+    if gen_btn:
+        with st.spinner(f"{model_local} 호출 중... (1~2분 소요)"):
+            try:
+                draft = generate_fdd_draft(api_key_local, template, info, model_local)
+                st.session_state["fdd_draft"] = draft
+                st.session_state["fdd_draft_meta"] = {
+                    "company": info.get("corp_name", corp_name),
+                    "template": template.get("project", "?"),
+                    "model": model_local,
+                }
+            except Exception as e:
+                st.error(f"생성 실패: {e}")
+
+    if "fdd_draft" in st.session_state:
+        meta = st.session_state.get("fdd_draft_meta", {})
+        # 새 회사로 검색해 이전 초안이 다른 회사인 경우 안내만 (자동 삭제는 안 함)
+        if meta.get("company") and meta["company"] != (info.get("corp_name") or corp_name):
+            st.info(f"ℹ️ 표시 중인 초안은 '{meta['company']}' 기준입니다. 현재 회사로 새 초안을 생성하려면 [초안 생성] 버튼을 누르세요.")
+        st.divider()
+        st.subheader(f"📝 초안: {meta.get('company', '?')}")
+        st.caption(f"템플릿: {meta.get('template', '?')} · 모델: {meta.get('model', '?')}")
+        st.markdown(st.session_state["fdd_draft"])
+        st.download_button(
+            "📥 마크다운 다운로드",
+            st.session_state["fdd_draft"],
+            file_name=f"FDD_draft_{meta.get('company', 'output')}.md",
+            mime="text/markdown",
+            key="fdd_download_btn",
+        )
+
 
 # ====================================================================
 # 3) 유틸
@@ -3246,8 +3510,26 @@ div.st-key-extract_btn_disabled button:active,
 """
 st.markdown(_UI_CSS, unsafe_allow_html=True)
 
-# ----- 좌측 사이드바: 조회 옵션 (segmented_control) -----
+# ----- 좌측 사이드바: 페이지 네비게이션 + 조회 옵션 -----
 with st.sidebar:
+    st.header("🧭 페이지")
+    _pages = ["홈", "DART 추출", "FDD"]
+    _icons = {"홈": "🏠 홈", "DART 추출": "📈 DART 추출", "FDD": "📝 FDD"}
+    # key 미사용 — radio가 session_state를 덮어쓰면 박스 클릭으로 페이지 변경 시 되돌려놓음.
+    # index만으로 현재 페이지 표시, 사용자 클릭 시 _nav 값이 다르면 page 업데이트.
+    _cur_idx = _pages.index(st.session_state.get("page", "홈")) if st.session_state.get("page", "홈") in _pages else 0
+    _nav = st.radio(
+        "이동",
+        _pages,
+        index=_cur_idx,
+        format_func=lambda x: _icons.get(x, x),
+        label_visibility="collapsed",
+    )
+    if _nav != st.session_state.get("page"):
+        st.session_state["page"] = _nav
+        st.rerun()
+    st.divider()
+
     st.header("⚙️ 조회 옵션")
     fs_label = st.segmented_control(
         "재무제표 구분", options=["연결", "별도"], default="연결", key="fs_seg",
@@ -3269,6 +3551,28 @@ with st.sidebar:
     )
 
     st.caption("옵션을 바꾸면 결과가 즉시 갱신됩니다.")
+
+    # ----- FDD 전용 키 (FDD 페이지에서만 사용) -----
+    st.divider()
+    st.header("🤖 FDD 초안 생성")
+    _anthropic_secret = ""
+    try:
+        _anthropic_secret = st.secrets.get("ANTHROPIC_API_KEY", "") or ""
+    except Exception:
+        _anthropic_secret = ""
+    anthropic_key = st.text_input(
+        "Anthropic API Key",
+        value=_anthropic_secret or os.getenv("ANTHROPIC_API_KEY", ""),
+        type="password",
+        help="FDD 초안 생성 시 사용 (Claude API)",
+        key="anthropic_key_input",
+    )
+    fdd_model = st.selectbox(
+        "Claude 모델",
+        ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"],
+        index=0,
+        key="fdd_model_select",
+    )
 
 current_year = datetime.now().year
 end_year = current_year - 1  # 종료연도는 직전 회계연도 자동 고정
@@ -3765,7 +4069,13 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
         # v38: marker — st-key-* 클래스 미부착인 구버전 Streamlit에서도
         # 인접 형제 셀렉터로 다음 버튼을 옅은 붉은색으로 스타일링하기 위한 표식.
         st.markdown('<span class="extract-disabled-marker"></span>', unsafe_allow_html=True)
-        st.button("데이터 추출", type="secondary", use_container_width=True, disabled=True, key="extract_btn_disabled")
+        _disabled_btn_label = {
+            "홈": "회사를 먼저 선택하세요",
+            "DART 추출": "데이터 추출",
+            "FDD": "회사를 먼저 선택하세요",
+        }.get(st.session_state["page"], "데이터 추출")
+        st.button(_disabled_btn_label, type="secondary", use_container_width=True,
+                   disabled=True, key="extract_btn_disabled")
         st.stop()
 
     selected_corp = companies.iloc[selected_idx]
@@ -3773,6 +4083,57 @@ if "companies" in st.session_state and not st.session_state["companies"].empty:
     corp_cls = selected_corp.get("corp_cls", "")
     corp_name = selected_corp.get("corp_name", "")
 
+    # 페이지 간 공유용 — 마지막으로 선택된 회사
+    st.session_state["selected_corp_dict"] = dict(selected_corp)
+
+    # ====================================================================
+    # 페이지 분기 — 홈: 박스 2개 / FDD: FDD UI / DART 추출: 기존 추출 흐름
+    # ====================================================================
+    if st.session_state["page"] == "홈":
+        st.markdown(
+            f"<div class='hpe-section'>✅ <b>{corp_name}</b> 선택됨 — 분석 모드를 선택하세요</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("""
+            <style>
+            .home-box-row [data-testid="stButton"] > button {
+                height: 110px;
+                font-size: 1.15rem;
+                font-weight: 700;
+                white-space: pre-line;
+                border: 2px solid #1E3D6B;
+                background: #f7f9fc;
+                color: #1E3D6B;
+                border-radius: 12px;
+            }
+            .home-box-row [data-testid="stButton"] > button:hover {
+                background: #1E3D6B;
+                color: #ffffff;
+                border-color: #1E3D6B;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        st.markdown("<div class='home-box-row'>", unsafe_allow_html=True)
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button("📊 요약 재무제표\n(5개년 추출 · 차트 · 엑셀)",
+                         use_container_width=True, key="home_to_dart"):
+                st.session_state["page"] = "DART 추출"
+                st.rerun()
+        with bcol2:
+            if st.button("📝 예비적 FDD\n(템플릿 기반 본문 초안)",
+                         use_container_width=True, key="home_to_fdd"):
+                st.session_state["page"] = "FDD"
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.caption("📌 사이드바에서 언제든 홈/DART/FDD 사이를 자유롭게 이동할 수 있습니다.")
+        st.stop()
+
+    if st.session_state["page"] == "FDD":
+        render_fdd_page(dart, selected_corp, corp_code, corp_name)
+        st.stop()
+
+    # === 아래는 DART 추출 페이지 전용 ===
     # v30: 외감 비상장기업 안내 메시지 제거 (사용자 요구)
 
     extract_btn = st.button("데이터 추출", type="primary", use_container_width=True, key="extract_btn_active")
