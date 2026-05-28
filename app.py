@@ -2226,66 +2226,86 @@ def collect_multi_year(_dart, corp_code: str, corp_cls: str,
             else:
                 yearly_meta[y] = {"source": "FAILED", "error": result.get("error")}
 
-        # v38: XBRL이 부분 성공했으나 당기순이익만 None인 연도 — HTML로 net income만 보강.
-        # (적자 외감 회사: XBRL element 누락 / 라벨 변형 케이스 대응)
-        # 전략: ① 해당 연도 자체 보고서, ② 실패 시 최신 보고서의 prior/prior-prior 컬럼.
-        ni_missing = [
-            y for y in years
-            if yearly_data.get(y) and yearly_data[y].get("당기순이익") is None
-            and (yearly_data[y].get("매출액") is not None or yearly_data[y].get("영업이익") is not None)
-        ]
-        for y in ni_missing:
-            if progress_callback:
-                progress_callback(0, 1, f"당기순이익 HTML 보강 {y}년")
+    # ============================================================
+    # v38: 당기순이익 누락 (None 또는 0) — HTML 다중 폴백.
+    # 상장사/외감 공통. 매출·영업이익은 잡혔는데 NI만 None인 케이스:
+    #  - XBRL이 net income을 못 잡았거나 prior-year amount가 비어있음
+    #  - 적자 표기 라벨(당기순손실 단독) keyword 미스
+    # 전략:
+    #  ① 해당 연도 자체 보고서 (extract_external_audit_data)
+    #  ② 그래도 누락이면 최신 보고서의 prior/prior-prior 컬럼
+    # ============================================================
+    ni_missing = [
+        y for y in years
+        if yearly_data.get(y)
+        and not yearly_data[y].get("당기순이익")  # None 또는 0
+        and (yearly_data[y].get("매출액") is not None
+             or yearly_data[y].get("영업이익") is not None)
+    ]
+    for y in ni_missing:
+        if progress_callback:
+            progress_callback(0, 1, f"당기순이익 HTML 보강 {y}년")
+        try:
             ni_result = extract_external_audit_data(_dart, corp_code, y, prefer_consolidated)
-            ni_val = (ni_result.get("data") or {}).get("당기순이익")
-            if ni_val is not None:
-                html_us = ni_result.get("unit_scale", 1) or 1
-                yearly_data[y]["당기순이익"] = int(ni_val * html_us)
-                meta = yearly_meta.get(y, {}) or {}
-                meta["ni_html_fallback"] = True
-                yearly_meta[y] = meta
-        # ② 여전히 누락된 연도 — 최신 보고서의 multi-year IS 컬럼에서 추출.
-        still_missing = [y for y in years if yearly_data.get(y) and yearly_data[y].get("당기순이익") is None]
-        if still_missing:
-            latest_year = max(years)
+        except Exception:
+            ni_result = {}
+        ni_val = (ni_result.get("data") or {}).get("당기순이익")
+        if ni_val is not None and ni_val != 0:
+            html_us = ni_result.get("unit_scale", 1) or 1
+            # 이미 저장된 unit_scale 기준에 맞춰 환산 (저장 단위는 corp_type별로 다름)
+            existing_us = (yearly_meta.get(y, {}) or {}).get("unit_scale", 1) or 1
+            yearly_data[y]["당기순이익"] = int(ni_val * html_us / existing_us)
+            meta = yearly_meta.get(y, {}) or {}
+            meta["ni_html_fallback"] = True
+            yearly_meta[y] = meta
+
+    # ② 여전히 누락된 연도 — 최신 보고서의 multi-year IS 컬럼에서 추출.
+    still_missing = [
+        y for y in years
+        if yearly_data.get(y) and not yearly_data[y].get("당기순이익")
+        and (yearly_data[y].get("매출액") is not None
+             or yearly_data[y].get("영업이익") is not None)
+    ]
+    if still_missing:
+        latest_year = max(years)
+        try:
+            reports = find_external_audit_reports(_dart, corp_code, latest_year)
+        except Exception:
+            reports = []
+        if reports:
+            chosen = next((r for r in reports if r["is_consolidated"]), reports[0]) \
+                if prefer_consolidated else \
+                next((r for r in reports if not r["is_consolidated"]), reports[0])
             try:
-                reports = find_external_audit_reports(_dart, corp_code, latest_year)
+                sub_docs = get_sub_docs(_dart, chosen["rcept_no"])
             except Exception:
-                reports = []
-            if reports:
-                chosen = next((r for r in reports if r["is_consolidated"]), reports[0]) \
-                    if prefer_consolidated else \
-                    next((r for r in reports if not r["is_consolidated"]), reports[0])
-                try:
-                    sub_docs = get_sub_docs(_dart, chosen["rcept_no"])
-                except Exception:
-                    sub_docs = None
-                if sub_docs is not None:
-                    is_url = find_statement_url(sub_docs, "손익계산서") \
-                        or find_statement_url(sub_docs, "포괄손익계산서")
-                    is_df = parse_html_statement(is_url) if is_url else None
-                    if is_df is None:
-                        combined_url = find_statement_url(sub_docs, "재무제표")
-                        if combined_url:
-                            classified = parse_combined_statements(combined_url)
-                            is_df = classified.get("IS")
-                            if is_url is None and combined_url:
-                                is_url = combined_url
-                    if is_df is not None and is_url is not None:
-                        unit_scale_html = detect_unit_from_header(is_url) or 1
-                        for y in still_missing:
-                            offset = latest_year - y
-                            if offset < 0 or offset > 2:
-                                continue
-                            v = find_account_in_html(is_df, ACCOUNT_KEYWORDS["당기순이익"], year_offset=offset)
-                            if v is None:
-                                v = _find_net_income_permissive(is_df, year_offset=offset)
-                            if v is not None:
-                                yearly_data[y]["당기순이익"] = int(v * unit_scale_html)
-                                meta = yearly_meta.get(y, {}) or {}
-                                meta["ni_html_fallback"] = f"latest-report-offset-{offset}"
-                                yearly_meta[y] = meta
+                sub_docs = None
+            if sub_docs is not None:
+                is_url = find_statement_url(sub_docs, "손익계산서") \
+                    or find_statement_url(sub_docs, "포괄손익계산서")
+                is_df = parse_html_statement(is_url) if is_url else None
+                if is_df is None:
+                    combined_url = find_statement_url(sub_docs, "재무제표")
+                    if combined_url:
+                        classified = parse_combined_statements(combined_url)
+                        is_df = classified.get("IS")
+                        if is_url is None:
+                            is_url = combined_url
+                if is_df is not None and is_url is not None:
+                    unit_scale_html = detect_unit_from_header(is_url) or 1
+                    for y in still_missing:
+                        offset = latest_year - y
+                        if offset < 0 or offset > 2:
+                            continue
+                        v = find_account_in_html(is_df, ACCOUNT_KEYWORDS["당기순이익"], year_offset=offset)
+                        if v is None:
+                            v = _find_net_income_permissive(is_df, year_offset=offset)
+                        if v is not None and v != 0:
+                            existing_us = (yearly_meta.get(y, {}) or {}).get("unit_scale", 1) or 1
+                            yearly_data[y]["당기순이익"] = int(v * unit_scale_html / existing_us)
+                            meta = yearly_meta.get(y, {}) or {}
+                            meta["ni_html_fallback"] = f"latest-report-offset-{offset}"
+                            yearly_meta[y] = meta
 
     # ============================================================
     # 첫 연도 매출 성장률 계산용 직전년 매출 추출
